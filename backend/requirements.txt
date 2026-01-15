@@ -1,0 +1,8 @@
+flask
+opencv-python
+python-dotenv
+flask-cors
+flask-sqlalchemy
+flask-jwt-extended
+ultralytics
+
