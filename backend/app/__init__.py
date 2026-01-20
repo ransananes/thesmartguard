@@ -2,6 +2,10 @@ from flask import Flask
 from flask_cors import CORS
 from flask_cors import CORS
 from .extensions import db, jwt
+from .routes import auth_bp, cameras_bp, video_bp, monitor_bp, faces_bp
+from .routes.settings import settings_bp
+from .models import Camera
+from .video_processor import VideoProcessor
 import os
 
 def create_app():
@@ -22,16 +26,20 @@ def create_app():
     def index():
         return "The Smart Guard Backend is Running!"
     
-    from . import routes
-    app.register_blueprint(routes.bp)
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(cameras_bp)
+    app.register_blueprint(video_bp)
+    app.register_blueprint(monitor_bp)
+    app.register_blueprint(faces_bp)
+    
+    app.register_blueprint(settings_bp)
     
     # Initialize video processor and start existing cameras
     with app.app_context():
         try:
             # Check if we have cameras and start processing
             # We need to import models here to avoid circular imports if possible or just use db
-            from .models import Camera
-            from .video_processor import VideoProcessor
+
             
             # Attaching to app instance so it persists
             app.video_processor = VideoProcessor(app)

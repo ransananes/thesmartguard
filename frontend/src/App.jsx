@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import StatusMonitor from './pages/StatusMonitor';
 import Login from './pages/Login';
 import { api } from './services/api';
+import { Toaster } from 'react-hot-toast';
 
 const ProtectedRoute = ({ children, isAuthenticated }) => {
     if (!isAuthenticated) {
@@ -49,6 +50,15 @@ function App() {
 
     return (
         <Router>
+            <Toaster 
+                position="top-right" 
+                toastOptions={{
+                    style: {
+                        background: '#333',
+                        color: '#fff',
+                    },
+                }}
+            />
             <Routes>
                 <Route 
                     path="/" 

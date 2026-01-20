@@ -57,3 +57,31 @@ class Detection(db.Model):
             'confidence': self.confidence,
             'timestamp': self.timestamp.isoformat() if self.timestamp else None
         }
+
+class KnownFace(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    encoding = db.Column(db.PickleType, nullable=False)
+    image_path = db.Column(db.String(255), nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True) # Start nullable for migration stability
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'image_url': f"/static/faces/{self.image_path}" if self.image_path else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+class NotificationSetting(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    label = db.Column(db.String(50), nullable=False)
+    enabled = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        return {
+            'label': self.label,
+            'enabled': self.enabled
+        }

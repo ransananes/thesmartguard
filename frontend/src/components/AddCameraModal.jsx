@@ -6,6 +6,8 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
     const [name, setName] = useState('');
     const [ipAddress, setIpAddress] = useState('');
     const [port, setPort] = useState('');
+    const [username, setUsername] = useState('');
+    const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
 
@@ -17,11 +19,19 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
         setIsLoading(true);
 
         try {
-            await onAdd({ name, ip_address: ipAddress, port: port ? parseInt(port) : null });
+            await onAdd({ 
+                name, 
+                ip_address: ipAddress, 
+                port: port ? parseInt(port) : null,
+                username: username || null,
+                password: password || null
+            });
             // Reset form
             setName('');
             setIpAddress('');
             setPort('');
+            setUsername('');
+            setPassword('');
             onClose();
         } catch (err) {
             setError(err.message || 'Failed to add camera');
@@ -91,8 +101,31 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
                             value={port}
                             onChange={(e) => setPort(e.target.value)}
                             className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all"
-                            placeholder="e.g. 8080"
+                            placeholder="e.g. 554"
                         />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-neutral-400 mb-1">Username (Optional)</label>
+                            <input
+                                type="text"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all"
+                                placeholder="admin"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-neutral-400 mb-1">Password (Optional)</label>
+                            <input
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all"
+                                placeholder="••••••"
+                            />
+                        </div>
                     </div>
 
                     <div className="flex justify-end gap-3 mt-6">

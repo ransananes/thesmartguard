@@ -102,6 +102,34 @@ export const api = {
         return data; // Returns { success: true, stats: {...} }
     },
 
+    getSettings: async () => {
+        const token = localStorage.getItem('token');
+        const headers = {};
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${API_BASE_URL}/settings/notifications`, { headers });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Failed to fetch settings');
+        return data;
+    },
+
+    updateSettings: async (settings) => {
+        const token = localStorage.getItem('token');
+        const headers = { 'Content-Type': 'application/json' };
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${API_BASE_URL}/settings/notifications`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(settings)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Failed to update settings');
+        return data;
+    },
+
     addDetection: async (detectionData) => {
         const token = localStorage.getItem('token');
         const headers = {
@@ -136,5 +164,62 @@ export const api = {
         } catch (error) {
             return false;
         }
+    },
+
+    fetchDetectionHistory: async () => {
+        const token = localStorage.getItem('token');
+        const headers = {};
+        if (token) {
+             headers['Authorization'] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${API_BASE_URL}/detections/history`, { headers });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Failed to fetch history');
+        return data; 
+    },
+
+    getFaces: async () => {
+        const token = localStorage.getItem('token');
+        const headers = {};
+        if (token) {
+             headers['Authorization'] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${API_BASE_URL}/faces`, { headers });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Failed to fetch faces');
+        return data; 
+    },
+
+    addFace: async (formData) => {
+        const token = localStorage.getItem('token');
+        const headers = {}; // Content-Type is set automatically by fetch for FormData
+        if (token) {
+             headers['Authorization'] = `Bearer ${token}`;
+        }
+        
+        const response = await fetch(`${API_BASE_URL}/faces`, {
+            method: 'POST',
+            body: formData,
+            headers
+        });
+        
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Failed to add face');
+        return data;
+    },
+
+    deleteFace: async (id) => {
+        const token = localStorage.getItem('token');
+        const headers = {};
+        if (token) {
+             headers['Authorization'] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${API_BASE_URL}/faces/${id}`, {
+            method: 'DELETE',
+            headers
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Failed to delete face');
+        return data;
     }
 };

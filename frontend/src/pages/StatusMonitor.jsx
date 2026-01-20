@@ -2,11 +2,13 @@ import React, { useState, useEffect } from 'react';
 import VideoPlayer from '../components/VideoPlayer';
 import Header from '../components/Header';
 import StatCard from '../components/StatCard';
-import StatusIndicator from '../components/StatusIndicator';
+import RecognizedFaces from '../components/RecognizedFaces';
+import RecentActivity from '../components/RecentActivity';
 import AddCameraModal from '../components/AddCameraModal';
+import SettingsModal from '../components/SettingsModal';
 import { SYSTEM_STATUS, MOCK_STREAM_URL } from '../constants';
 import { api } from '../services/api';
-import { Activity, Users, AlertTriangle, Lock, Plus, Trash2, Camera } from 'lucide-react';
+import { Activity, Users, AlertTriangle, Lock, Plus, Trash2, Camera, Settings } from 'lucide-react';
 
 const StatusMonitor = () => {
     const [status, setStatus] = useState(SYSTEM_STATUS.SCANNING);
@@ -15,8 +17,10 @@ const StatusMonitor = () => {
     const [isLoading, setIsLoading] = useState(true);
 
     const [isAddCameraModalOpen, setIsAddCameraModalOpen] = useState(false);
+    const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 
     const [statsData, setStatsData] = useState({ detections: 0, alerts: 0, active_cameras: 0 });
+    const [sidebarTab, setSidebarTab] = useState('faces'); // 'faces' or 'history'
 
     // Fetch cameras and stats on mount
     const loadData = async () => {
@@ -49,6 +53,17 @@ const StatusMonitor = () => {
 
     useEffect(() => {
         loadData();
+        
+        // Auto-refresh stats every 5 seconds
+        const intervalId = setInterval(() => {
+            api.fetchStats().then(response => {
+                if (response.stats) {
+                    setStatsData(response.stats);
+                }
+            }).catch(e => console.error("Stats poll failed", e));
+        }, 5000);
+
+        return () => clearInterval(intervalId);
     }, []);
 
 
@@ -161,6 +176,14 @@ const StatusMonitor = () => {
                         >
                             Refresh Stats
                         </button>
+
+                        <button
+                            onClick={() => setIsSettingsModalOpen(true)}
+                            className="p-2 rounded-lg bg-neutral-800 text-neutral-400 hover:bg-neutral-700 hover:text-white transition-colors flex-shrink-0"
+                            title="Notification Settings"
+                        >
+                            <Settings size={20} />
+                        </button>
                     </div>
                     
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -176,8 +199,44 @@ const StatusMonitor = () => {
                 </div>
 
                 {/* Status Sidebar */}
-                <div className="lg:col-span-1">
-                    <StatusIndicator status={status} />
+                {/* Status Sidebar */}
+                <div className="lg:col-span-1 flex flex-col h-[600px] bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
+                     {/* Sidebar Tabs */}
+                     <div className="flex border-b border-neutral-800">
+                        <button
+                            onClick={() => setSidebarTab('faces')}
+                            className={`flex-1 py-3 text-sm font-medium transition-colors ${
+                                sidebarTab === 'faces' 
+                                ? 'bg-neutral-800 text-purple-400 border-b-2 border-purple-500' 
+                                : 'text-neutral-400 hover:text-white hover:bg-neutral-800/50'
+                            }`}
+                        >
+                            Faces
+                        </button>
+                        <button
+                            onClick={() => setSidebarTab('history')}
+                            className={`flex-1 py-3 text-sm font-medium transition-colors ${
+                                sidebarTab === 'history' 
+                                ? 'bg-neutral-800 text-purple-400 border-b-2 border-purple-500' 
+                                : 'text-neutral-400 hover:text-white hover:bg-neutral-800/50'
+                            }`}
+                        >
+                            History
+                        </button>
+                     </div>
+
+                     {/* Tab Content */}
+                     <div className="flex-1 overflow-hidden relative">
+                        {sidebarTab === 'faces' ? (
+                            <div className="absolute inset-0 overflow-y-auto">
+                                <RecognizedFaces />
+                            </div>
+                        ) : (
+                            <div className="absolute inset-0 overflow-y-auto p-4">
+                                <RecentActivity />
+                            </div>
+                        )}
+                     </div>
                 </div>
             </main>
 
@@ -185,6 +244,12 @@ const StatusMonitor = () => {
                 isOpen={isAddCameraModalOpen} 
                 onClose={() => setIsAddCameraModalOpen(false)} 
                 onAdd={handleAddCamera} 
+            />
+            
+            <SettingsModal
+                isOpen={isSettingsModalOpen}
+                onClose={() => setIsSettingsModalOpen(false)}
+                onSave={loadData} // Refresh stats to reflect new settings potentially
             />
         </div>
     );
