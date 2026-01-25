@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from ..models import Detection, Camera, User, NotificationSetting
-from ..extensions import db
+from app.models import Detection, Camera, User, NotificationSetting
+from app.extensions import db
 
 monitor_bp = Blueprint('monitor', __name__, url_prefix='/api')
 
@@ -39,22 +39,15 @@ def get_stats():
     total_detections = Detection.query.count()
     active_cameras = Camera.query.filter_by(status='online').count()
     
-    # Custom Alert Logic based on User Settings
     alerts_count = 0
     if user:
         settings = NotificationSetting.query.filter_by(user_id=user.id, enabled=True).all()
         enabled_labels = [s.label for s in settings]
         
-        # If no settings found (defaults never saved), assume defaults or 0? 
-        # In `get_notification_settings`, we returned defaults if none.
-        # Here we should probably check if empty and if so, count typical alerts?
-        # Or better: if empty, 0 alerts explicitly as per user config (or lack thereof).
-        # Let's say if no settings exist, we default to "person" alerts for backward compatibility/good UX
         if not settings:
-             # Default behavior: alert on person
              enabled_labels = ['person', 'Face: Unknown']
 
-        # Filter detections where label is in enabled_labels
+
         alerts_count = Detection.query.filter(Detection.label.in_(enabled_labels)).count()
     
     return jsonify({
@@ -76,18 +69,13 @@ def get_history():
     if not user:
          return jsonify({'success': False, 'message': 'User not found'}), 404
          
-    # Filter by User Settings
     settings = NotificationSetting.query.filter_by(user_id=user.id, enabled=True).all()
     
     if not settings:
-         # Default if no settings: show everything or defaults?
-         # Sticking to "Settings = Filter", so if nothing enabled, maybe show nothing?
-         # Or defaults. Let's assume defaults for better UX.
          enabled_labels = ['person', 'Face: Unknown', 'Face: Known', 'car']
     else:
          enabled_labels = [s.label for s in settings]
 
-    # Fetch last 50 detections matching enabled labels
     history = Detection.query.filter(Detection.label.in_(enabled_labels))\
               .order_by(Detection.timestamp.desc())\
               .limit(50).all()

@@ -1,7 +1,8 @@
 from flask import Blueprint, jsonify, request, current_app
 from flask_jwt_extended import jwt_required
-from ..models import Camera, Detection
-from ..extensions import db
+from app.models import Camera, Detection
+from app.extensions import db
+from app.video_processor import VideoProcessor
 
 cameras_bp = Blueprint('cameras', __name__, url_prefix='/api')
 
@@ -24,11 +25,10 @@ def add_camera():
     if not name or not ip_address:
         return jsonify({'success': False, 'message': 'Name and IP Address are required'}), 400
         
-    # Construct stream URL
     if ip_address.startswith(('http://', 'https://', 'rtsp://')):
         stream_url = ip_address
     else:
-        # Determine protocol and auth
+
         if port and int(port) == 554:
             protocol = 'rtsp'
         else:
@@ -44,7 +44,7 @@ def add_camera():
         ip_address=ip_address,
         port=port,
         stream_url=stream_url,
-        status='online' # Default status
+        status='online'
     )
     
     try:
@@ -52,7 +52,6 @@ def add_camera():
         db.session.commit()
 
         if not hasattr(current_app, 'video_processor'):
-            from ..video_processor import VideoProcessor
             current_app.video_processor = VideoProcessor(current_app._get_current_object())
         
         current_app.video_processor.start_processing(new_camera.id, stream_url)
@@ -70,13 +69,12 @@ def delete_camera(camera_id):
         return jsonify({'success': False, 'message': 'Camera not found'}), 404
         
     try:
-        # Delete associated detections first to satisfy Foreign Key
+
         Detection.query.filter_by(camera_id=camera_id).delete()
         
         db.session.delete(camera)
         db.session.commit()
         
-        # Stop processing if it's the current camera
         if hasattr(current_app, 'video_processor') and current_app.video_processor.camera_id == camera_id:
             current_app.video_processor.stop_processing()
             

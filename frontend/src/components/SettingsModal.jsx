@@ -48,7 +48,6 @@ const SettingsModal = ({ isOpen, onClose, onSave }) => {
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
             <div className="bg-neutral-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl relative overflow-hidden">
-                {/* Header */}
                 <div className="flex items-center justify-between p-6 border-b border-white/5">
                     <div className="flex items-center gap-3">
                         <div className="p-2 bg-purple-500/10 rounded-lg">
@@ -61,7 +60,7 @@ const SettingsModal = ({ isOpen, onClose, onSave }) => {
                     </button>
                 </div>
 
-                {/* Body */}
+
                 <div className="p-6 space-y-4">
                     <p className="text-sm text-neutral-400">
                         Customize which detection events trigger an alert.
@@ -89,7 +88,7 @@ const SettingsModal = ({ isOpen, onClose, onSave }) => {
                     )}
                 </div>
 
-                {/* Footer */}
+
                 <div className="p-6 border-t border-white/5 flex justify-end gap-3">
                     <button 
                         onClick={onClose}

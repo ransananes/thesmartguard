@@ -1,5 +1,6 @@
-from .extensions import db
+from app.extensions import db
 from werkzeug.security import generate_password_hash, check_password_hash
+import pytz
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -45,6 +46,7 @@ class Detection(db.Model):
     camera_id = db.Column(db.Integer, db.ForeignKey('camera.id'), nullable=False)
     label = db.Column(db.String(50), nullable=False)
     confidence = db.Column(db.Float, nullable=False)
+    image_path = db.Column(db.String(255), nullable=True) # New field
     timestamp = db.Column(db.DateTime, server_default=db.func.now())
 
     camera = db.relationship('Camera', backref=db.backref('detections', lazy=True))
@@ -55,7 +57,8 @@ class Detection(db.Model):
             'camera_id': self.camera_id,
             'label': self.label,
             'confidence': self.confidence,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None
+            'image_path': f"/media/detections/{self.image_path}" if self.image_path else None,
+            'timestamp': self.timestamp.strftime('%Y-%m-%dT%H:%M:%S') if self.timestamp else None
         }
 
 class KnownFace(db.Model):
@@ -70,7 +73,7 @@ class KnownFace(db.Model):
         return {
             'id': self.id,
             'name': self.name,
-            'image_url': f"/static/faces/{self.image_path}" if self.image_path else None,
+            'image_url': f"/media/faces/{self.image_path}" if self.image_path else None,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 

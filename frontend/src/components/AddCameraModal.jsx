@@ -26,7 +26,7 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
                 username: username || null,
                 password: password || null
             });
-            // Reset form
+
             setName('');
             setIpAddress('');
             setPort('');

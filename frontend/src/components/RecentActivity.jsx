@@ -18,14 +18,13 @@ const RecentActivity = () => {
 
         fetchHistory();
         
-        // Poll every 5 seconds for updates
-        const interval = setInterval(fetchHistory, 5000);
+        const interval = setInterval(fetchHistory, 15000);
         return () => clearInterval(interval);
     }, []);
 
     const formatTime = (isoString) => {
         if (!isoString) return '';
-        const date = new Date(isoString + 'Z'); // Ensure UTC parsing if straight from DB
+        const date = new Date(isoString + 'Z'); 
         return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     };
 

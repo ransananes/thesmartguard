@@ -4,7 +4,7 @@ import { api } from '../services/api';
 import toast from 'react-hot-toast';
 
 const RecognizedFaces = () => {
-    const [activeTab, setActiveTab] = useState('live'); // 'live' or 'manage'
+    const [activeTab, setActiveTab] = useState('live');
     const [faces, setFaces] = useState([]);
     const [newFaceName, setNewFaceName] = useState('');
     const [uploadFile, setUploadFile] = useState(null);
@@ -16,15 +16,21 @@ const RecognizedFaces = () => {
         loadFaces();
     }, []);
 
-    // Poll for live detections (in a real app this might use websockets or shared state)
+    const fetchDetections = async () => {
+        try {
+            const data = await api.getRecentDetections();
+            if (data && data.detections) {
+                setRecentDetections(data.detections);
+            }
+        } catch (e) {
+            console.error("Poll failed", e);
+        }
+    };
+
     useEffect(() => {
         if (activeTab === 'live') {
-            const interval = setInterval(() => {
-                // For now, we'll try to get stats or recent detections if the API supported it.
-                // Since our stats endpoint gives aggregate counts, let's just mock this 
-                // or add an endpoint for recent detections.
-                // A better approach for the future: GET /api/detections?limit=10
-            }, 2000);
+            fetchDetections();
+            const interval = setInterval(fetchDetections, 2000);
             return () => clearInterval(interval);
         }
     }, [activeTab]);
@@ -81,7 +87,7 @@ const RecognizedFaces = () => {
 
     return (
         <div className="h-full flex flex-col">
-            {/* Tabs */}
+
             <div className="flex border-b border-neutral-800">
                 <button
                     onClick={() => setActiveTab('live')}
@@ -105,23 +111,79 @@ const RecognizedFaces = () => {
                 </button>
             </div>
 
-            {/* Content */}
+
             <div className="flex-1 overflow-y-auto p-4">
                 {activeTab === 'live' ? (
                     <div className="space-y-4">
-                        <div className="text-center text-neutral-500 py-8">
-                            <Camera className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                            <p>Watching for familiar faces...</p>
-                            <p className="text-xs mt-2">Faces will be highlighted in the video stream.</p>
-                        </div>
-                        {/* 
-                           Here we could list recent face detections if we added an endpoint for it.
-                           For now, the video stream itself shows the boxes.
-                        */}
+                             <div className="flex justify-between items-center">
+                                 <h4 className="text-xs font-bold text-neutral-400 uppercase tracking-widest pl-1">Recent Detections</h4>
+                                 <button onClick={fetchDetections} className="text-xs text-purple-400 hover:text-purple-300">Refresh</button>
+                             </div>
+                             
+                             {recentDetections.length === 0 ? (
+                                 <div className="text-center p-4 border border-dashed border-neutral-800 rounded-lg text-neutral-600 text-sm">
+                                     No detections yet
+                                 </div>
+                             ) : (
+                                 recentDetections.map((det, i) => {
+                                     const name = det.label.replace('Face: ', '');
+                                     const isUnknown = name === 'Unknown';
+                                     
+                                     return (
+                                        <div key={i} className={`flex items-start gap-3 p-3 rounded-lg border ${isUnknown ? 'bg-red-900/10 border-red-900/30' : 'bg-green-900/10 border-green-900/30'}`}>
+
+                                            {det.image_path ? (
+                                                <img 
+                                                    src={`http://localhost:5000${det.image_path}`} 
+                                                    alt={name}
+                                                    className="w-12 h-12 rounded-lg object-cover border border-neutral-700"
+                                                />
+                                            ) : (
+                                                <div className={`w-12 h-12 rounded-lg flex items-center justify-center font-bold text-lg ${isUnknown ? 'bg-red-500/20 text-red-500' : 'bg-green-500/20 text-green-500'}`}>
+                                                    {name.charAt(0)}
+                                                </div>
+                                            )}
+                                            
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex justify-between items-start">
+                                                    <p className={`font-medium truncate ${isUnknown ? 'text-red-200' : 'text-green-200'}`}>{name}</p>
+                                                    <span className="text-xs text-neutral-500 whitespace-nowrap">
+                                                        {new Date(det.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs text-neutral-500 mt-1 capitalize">{det.label}</p>
+                                                
+                                                {isUnknown && (
+                                                    <button
+                                                        onClick={() => {
+                                                            const newName = window.prompt("Enter name for this person:");
+                                                            if (newName) {
+                                                                const toastId = toast.loading('Adding face...');
+                                                                api.addFaceFromDetection(det.id, newName)
+                                                                    .then((res) => {
+                                                                        const msg = res.cleaned_up ? ` & removed ${res.cleaned_up} duplicates.` : '.';
+                                                                        toast.success('Face added' + msg, { id: toastId });
+                                                                        loadFaces();
+                                                                        fetchDetections();
+                                                                    })
+                                                                    .catch(err => {
+                                                                        toast.error('Failed: ' + err.message, { id: toastId });
+                                                                    });
+                                                            }
+                                                        }}
+                                                        className="mt-2 text-xs bg-red-500/20 hover:bg-red-500/30 text-red-300 px-2 py-1 rounded border border-red-500/30 transition-colors flex items-center gap-1"
+                                                    >
+                                                        <UserPlus size={12} /> Add to Known
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                     );
+                                 })
+                             )}
                     </div>
                 ) : (
                     <div className="space-y-6">
-                        {/* Add New Face */}
                         <form onSubmit={handleUpload} className="bg-neutral-800/50 p-4 rounded-xl space-y-4">
                             <h3 className="text-white font-medium flex items-center gap-2">
                                 <UserPlus size={18} /> Add New Face
@@ -161,7 +223,7 @@ const RecognizedFaces = () => {
                             </button>
                         </form>
 
-                        {/* Known Faces List */}
+
                         <div className="space-y-2">
                             <h3 className="text-neutral-400 text-sm uppercase tracking-wider font-bold">Known People ({faces.length})</h3>
                             {faces.length === 0 && (

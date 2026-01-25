@@ -1,23 +1,21 @@
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_cors import CORS
-from flask_cors import CORS
-from .extensions import db, jwt
-from .routes import auth_bp, cameras_bp, video_bp, monitor_bp, faces_bp
-from .routes.settings import settings_bp
-from .models import Camera
-from .video_processor import VideoProcessor
 import os
+from app.extensions import db, jwt
+from app.routes import auth_bp, cameras_bp, video_bp, monitor_bp, faces_bp
+from app.routes.settings import settings_bp
+from app.models import Camera
+from app.video_processor import VideoProcessor
 
 def create_app():
     app = Flask(__name__)
     CORS(app)
 
-    # Database Config
     basedir = os.path.abspath(os.path.dirname(__file__))
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'smartguard.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-    app.config['JWT_SECRET_KEY'] = 'super-secret-key-change-this-in-prod' # Change this!
+    app.config['JWT_SECRET_KEY'] = 'super-secret-key-change-this-in-prod'
     
     db.init_app(app)
     jwt.init_app(app)
@@ -25,6 +23,11 @@ def create_app():
     @app.route('/')
     def index():
         return "The Smart Guard Backend is Running!"
+
+    @app.route('/media/<path:filename>')
+    def media_files(filename):
+        storage_path = os.path.join(os.path.dirname(app.root_path), 'storage')
+        return send_from_directory(storage_path, filename)
     
     app.register_blueprint(auth_bp)
     app.register_blueprint(cameras_bp)
@@ -34,28 +37,10 @@ def create_app():
     
     app.register_blueprint(settings_bp)
     
-    # Initialize video processor and start existing cameras
+    
     with app.app_context():
-        try:
-            # Check if we have cameras and start processing
-            # We need to import models here to avoid circular imports if possible or just use db
+        app.video_processor = VideoProcessor(app)
 
-            
-            # Attaching to app instance so it persists
-            app.video_processor = VideoProcessor(app)
-            
-            cameras = Camera.query.filter_by(status='online').all()
-            if cameras:
-                print(f"Found {len(cameras)} online cameras. Starting processors...")
-                for cam in cameras:
-                    # For this demo, we only support one active stream/processor efficiently
-                    # but let's try to start the first one or all if threaded properly.
-                    # VideoProcessor class as written supports ONE camera at a time (single self.camera_id).
-                    # So let's just start the first online one.
-                    print(f"Starting processor for camera: {cam.name}")
-                    app.video_processor.start_processing(cam.id, cam.stream_url)
-                    break # Only one for now
-        except Exception as e:
-            print(f"Error initializing video processor: {e}")
 
     return app
+

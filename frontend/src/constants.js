@@ -10,21 +10,21 @@ export const STATUS_CONFIG = {
         color: 'text-blue-400',
         borderColor: 'border-blue-500',
         bgColor: 'bg-blue-500/10',
-        iconColor: '#60a5fa', // blue-400
+        iconColor: '#60a5fa',
     },
     [SYSTEM_STATUS.ACCESS_GRANTED]: {
         label: 'Access Granted',
         color: 'text-emerald-400',
         borderColor: 'border-emerald-500',
         bgColor: 'bg-emerald-500/10',
-        iconColor: '#34d399', // emerald-400
+        iconColor: '#34d399',
     },
     [SYSTEM_STATUS.INTRUDER_ALERT]: {
         label: '! INTRUDER ALERT !',
         color: 'text-red-500',
         borderColor: 'border-red-600',
         bgColor: 'bg-red-600/20',
-        iconColor: '#ef4444', // red-500
+        iconColor: '#ef4444', 
     },
 };
 

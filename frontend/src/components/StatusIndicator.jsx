@@ -16,7 +16,6 @@ const StatusIndicator = ({ status }) => {
             config.borderColor,
             config.bgColor
         )}>
-            {/* Background Glow */}
             <div className={cn("absolute inset-0 opacity-20 blur-3xl", config.bgColor.replace('/10', '/30').replace('/20', '/40'))} />
 
             <div className={cn("relative z-10 w-24 h-24 rounded-full flex items-center justify-center border-4 backdrop-blur-md shadow-[0_0_30px_rgba(0,0,0,0.3)]", config.borderColor)}>

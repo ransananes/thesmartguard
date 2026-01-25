@@ -20,9 +20,8 @@ const StatusMonitor = () => {
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 
     const [statsData, setStatsData] = useState({ detections: 0, alerts: 0, active_cameras: 0 });
-    const [sidebarTab, setSidebarTab] = useState('faces'); // 'faces' or 'history'
+    const [sidebarTab, setSidebarTab] = useState('faces');
 
-    // Fetch cameras and stats on mount
     const loadData = async () => {
         setIsLoading(true);
         try {
@@ -54,14 +53,13 @@ const StatusMonitor = () => {
     useEffect(() => {
         loadData();
         
-        // Auto-refresh stats every 5 seconds
         const intervalId = setInterval(() => {
             api.fetchStats().then(response => {
                 if (response.stats) {
                     setStatsData(response.stats);
                 }
             }).catch(e => console.error("Stats poll failed", e));
-        }, 5000);
+        }, 30000);
 
         return () => clearInterval(intervalId);
     }, []);
@@ -70,7 +68,7 @@ const StatusMonitor = () => {
     const handleAddCamera = async (cameraData) => {
         try {
             const response = await api.addCamera(cameraData);
-            await loadData(); // Refresh list and stats
+            await loadData();
             
             if (response.camera) {
                 setSelectedCamera(response.camera);
@@ -107,7 +105,7 @@ const StatusMonitor = () => {
             <Header />
 
             <main className="grid lg:grid-cols-3 gap-8">
-                {/* Main Video Feed Area */}
+
                 <div className="lg:col-span-2 space-y-6">
                     {!isLoading && cameras.length === 0 ? (
                         <div className="w-full aspect-video bg-neutral-900 rounded-xl border border-white/10 flex flex-col items-center justify-center p-8 text-center space-y-4">
@@ -135,7 +133,7 @@ const StatusMonitor = () => {
                         />
                     )}
                     
-                    {/* Camera Selector */}
+
                     <div className="flex items-center gap-4">
                             <div className="flex gap-2 overflow-x-auto py-2 scrollbar-thin scrollbar-thumb-neutral-700 scrollbar-track-transparent flex-1">
                                  {cameras.map(cam => (
@@ -198,10 +196,9 @@ const StatusMonitor = () => {
                     </div>
                 </div>
 
-                {/* Status Sidebar */}
-                {/* Status Sidebar */}
+
                 <div className="lg:col-span-1 flex flex-col h-[600px] bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
-                     {/* Sidebar Tabs */}
+
                      <div className="flex border-b border-neutral-800">
                         <button
                             onClick={() => setSidebarTab('faces')}
@@ -225,7 +222,7 @@ const StatusMonitor = () => {
                         </button>
                      </div>
 
-                     {/* Tab Content */}
+
                      <div className="flex-1 overflow-hidden relative">
                         {sidebarTab === 'faces' ? (
                             <div className="absolute inset-0 overflow-y-auto">
@@ -249,7 +246,7 @@ const StatusMonitor = () => {
             <SettingsModal
                 isOpen={isSettingsModalOpen}
                 onClose={() => setIsSettingsModalOpen(false)}
-                onSave={loadData} // Refresh stats to reflect new settings potentially
+                onSave={loadData}
             />
         </div>
     );

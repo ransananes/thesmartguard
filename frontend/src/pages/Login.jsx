@@ -18,21 +18,18 @@ const Login = ({ onLogin }) => {
         setIsLoading(true);
 
         try {
-            // Artificial delay for "Security check" effect
             await new Promise(r => setTimeout(r, 800));
             
             const data = await api.login(username, password);
             if (data.success) {
                 setSuccess(true);
-                // Store auth State
                 localStorage.setItem('isAuthenticated', 'true');
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('user', JSON.stringify(data.user));
                 
-                // Update parent state
                 if (onLogin) onLogin();
 
-                // Wait for success animation
+
                 setTimeout(() => {
                     navigate('/dashboard');
                 }, 1000);
@@ -48,13 +45,13 @@ const Login = ({ onLogin }) => {
 
     return (
         <div className="min-h-screen bg-[#05050A] text-white flex items-center justify-center p-4 overflow-hidden relative">
-            {/* Ambient Background */}
+
             <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0">
                 <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-purple-900/20 rounded-full blur-[120px]" />
                 <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] bg-blue-900/20 rounded-full blur-[120px]" />
             </div>
 
-            {/* Grid Pattern */}
+
             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 z-0 pointer-events-none" />
             <div className="absolute inset-0 z-0 opacity-10" 
                 style={{backgroundImage: 'radial-gradient(circle at 1px 1px, white 1px, transparent 0)', backgroundSize: '40px 40px'}}>
@@ -67,7 +64,7 @@ const Login = ({ onLogin }) => {
                 className="w-full max-w-md relative z-10"
             >
                 <div className="bg-black/40 backdrop-blur-2xl p-8 rounded-3xl border border-white/10 shadow-2xl relative overflow-hidden group">
-                    {/* Scanning Line Effect */}
+                    
                     <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-purple-500 to-transparent opacity-50 animate-scan" />
                     
                     <div className="flex flex-col items-center mb-10 relative">
@@ -177,9 +174,8 @@ const Login = ({ onLogin }) => {
                         </motion.button>
                     </form>
 
-                    {/* Footer Decorations */}
+
                     <div className="mt-8 flex justify-between items-center opacity-30 text-[10px] font-mono border-t border-white/10 pt-4">
-                        <span>SYSr: v.2.4.0</span>
                         <span>SECURE CONNECTION</span>
                     </div>
                 </div>

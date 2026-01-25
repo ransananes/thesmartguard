@@ -10,7 +10,6 @@ const VideoPlayer = ({ streamUrl }) => {
 
     const [isPlaying, setIsPlaying] = useState(false);
 
-    // Reset error state and playing state when stream URL changes
     useEffect(() => {
         setHasError(false);
         setIsPlaying(false);
@@ -85,7 +84,7 @@ const VideoPlayer = ({ streamUrl }) => {
                         />
                     )}
                     
-                    {/* Controls */}
+                    
                     <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex justify-end pointer-events-none">
                         <button 
                             onClick={toggleFullscreen}
@@ -95,7 +94,7 @@ const VideoPlayer = ({ streamUrl }) => {
                         </button>
                     </div>
                     
-                    {/* Live Indicator */}
+                    
                     <div className="absolute top-4 left-4 px-3 py-1 rounded-full bg-red-600/80 backdrop-blur-sm flex items-center gap-2">
                         <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                         <span className="text-white text-xs font-bold tracking-widest uppercase">Live</span>
