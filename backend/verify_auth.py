@@ -5,7 +5,6 @@ BASE_URL = "http://localhost:5000/api"
 
 def test_login():
     print("Testing Login...")
-    # Using the root user we know exists from seed_db
     try:
         response = requests.post(f"{BASE_URL}/login", json={
             "username": "root",

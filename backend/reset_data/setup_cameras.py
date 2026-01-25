@@ -31,12 +31,9 @@ with app.app_context():
             )
             db.session.add(cam1)
 
-        # Camera 2
         video2_path = os.path.join(base_dir, 'app', 'static', 'videos', 'video02.mp4')
         if not os.path.exists(video2_path):
              print(f"Error: video02.mp4 not found at {video2_path}")
-             # Fallback to video01 if missing, for testing? 
-             # No, I alread copied it.
         else:
             cam2 = Camera(
                 name="Video 02",
@@ -50,7 +47,6 @@ with app.app_context():
         
         print("Database updated successfully.")
         
-        # Verify
         cameras = Camera.query.all()
         for c in cameras:
             print(f"Camera ID {c.id}: {c.name} ({c.location})")

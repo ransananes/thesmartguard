@@ -2,6 +2,7 @@ import os
 import uuid
 import subprocess
 import json
+import logging
 import face_recognition
 import numpy as np
 import pickle
@@ -12,6 +13,8 @@ from flask import Blueprint, jsonify, request, current_app, send_from_directory
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.models import KnownFace, User, Detection
 from app.extensions import db
+
+logger = logging.getLogger(__name__)
 
 faces_bp = Blueprint('faces', __name__, url_prefix='/api')
 
@@ -55,7 +58,7 @@ def add_face():
         encodings = face_recognition.face_encodings(img)
 
         if not encodings:
-            os.remove(save_path) # Cleanup
+            os.remove(save_path)
             return jsonify({'success': False, 'message': 'No face found in image'}), 400
         
 
@@ -75,7 +78,7 @@ def add_face():
             if hasattr(current_app.video_processor, 'reload_faces'):
                 current_app.video_processor.reload_faces()
             else:
-                print("WARNING: VideoProcessor instance missing reload_faces method") 
+                logger.warning("VideoProcessor instance missing reload_faces method") 
 
         return jsonify({'success': True, 'face': new_face.to_dict()}), 201
 
@@ -86,20 +89,20 @@ def add_face():
 @faces_bp.route('/faces/from_detection', methods=['POST'])
 @jwt_required()
 def add_face_from_detection():
-    print("=== STARTING add_face_from_detection ===")
+    logger.info("=== STARTING add_face_from_detection ===")
     data = request.get_json()
     if not data or 'detection_id' not in data or 'name' not in data:
         return jsonify({'success': False, 'message': 'detection_id and name are required'}), 400
         
     detection_id = data['detection_id']
     name = data['name']
-    print(f"Processing: detection_id={detection_id}, name={name}")
+    logger.info(f"Processing: detection_id={detection_id}, name={name}")
     
     current_user_name = get_jwt_identity()
     user = User.query.filter_by(username=current_user_name).first()
     
     try:
-        print("Step 1: Fetching detection...")
+        logger.info("Step 1: Fetching detection...")
         detection = Detection.query.get(detection_id)
         if not detection:
              return jsonify({'success': False, 'message': 'Detection not found'}), 404
@@ -107,7 +110,7 @@ def add_face_from_detection():
         if not detection.image_path:
              return jsonify({'success': False, 'message': 'No image associated with this detection'}), 400
         
-        print(f"Step 2: Setting up paths for {detection.image_path}...")
+        logger.info(f"Step 2: Setting up paths for {detection.image_path}...")
         storage_root = os.path.join(os.path.dirname(current_app.root_path), 'storage')
         source_path = os.path.join(storage_root, 'detections', detection.image_path)
         dest_filename = f"{uuid.uuid4()}_{detection.image_path}"
@@ -116,14 +119,13 @@ def add_face_from_detection():
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         
         if not os.path.exists(source_path):
-             print(f"ERROR: Source file missing: {source_path}")
+             logger.error(f"Source file missing: {source_path}")
              return jsonify({'success': False, 'message': 'Source image file missing'}), 404
         
-        print("Step 3: Copying file...")
-        # Copy file
+        logger.info("Step 3: Copying file...")
         shutil.copy2(source_path, dest_path)
         
-        print("Step 4: Encoding face (in subprocess to prevent crashes)...") 
+        logger.info("Step 4: Encoding face (in subprocess to prevent crashes)...") 
         
         try:
             encode_script = os.path.join(os.path.dirname(current_app.root_path), 'encode_face.py')
@@ -131,29 +133,29 @@ def add_face_from_detection():
                 ['python', encode_script, dest_path],
                 capture_output=True,
                 text=True,
-                timeout=30  # 30 second timeout
+                timeout=30  
             )
             
             if result.returncode == 0 and result.stdout:
                 data = json.loads(result.stdout)
                 if data.get('success') and data.get('encoding'):
                     encoding = np.array(data['encoding'])
-                    print(f"  Successfully encoded face (size: {len(encoding)})")
+                    logger.info(f"Successfully encoded face (size: {len(encoding)})")
                 else:
-                    print(f"  Encoding failed: {data.get('error', 'Unknown error')}")
+                    logger.error(f"Encoding failed: {data.get('error', 'Unknown error')}")
                     encoding = np.zeros(128)
             else:
-                print(f"  Subprocess failed: {result.stderr}")
+                logger.error(f"Subprocess failed: {result.stderr}")
                 encoding = np.zeros(128)
                 
         except subprocess.TimeoutExpired:
-            print("  Encoding timed out, using dummy encoding")
+            logger.error("Encoding timed out, using dummy encoding")
             encoding = np.zeros(128)
         except Exception as enc_err:
-            print(f"  ERROR during face encoding: {enc_err}")
+            logger.error(f"Error during face encoding: {enc_err}")
             encoding = np.zeros(128)
         
-        print("Step 5: Saving to database...")
+        logger.info("Step 5: Saving to database...")
         new_face = KnownFace(
             name=name, 
             encoding=encoding,
@@ -166,9 +168,9 @@ def add_face_from_detection():
 
         if hasattr(current_app, 'video_processor') and current_app.video_processor:
              current_app.video_processor.reload_faces()
-             print("Face reload triggered successfully")
+             logger.info("Face reload triggered successfully")
              
-        print("Step 7: Cleaning up similar detections...")
+        logger.info("Step 7: Cleaning up similar detections...")
         deleted_count = 0
         
         try:
@@ -179,10 +181,10 @@ def add_face_from_detection():
             
             if os.path.exists(source_path):
                 source_hash = imagehash.phash(Image.open(source_path))
-                print(f"Source image hash: {source_hash}")
+                logger.info(f"Source image hash: {source_hash}")
                 
                 unknown_detections = Detection.query.filter_by(label="Face: Unknown").all()
-                print(f"Checking {len(unknown_detections)} unknown detections...")
+                logger.info(f"Checking {len(unknown_detections)} unknown detections...")
                 
                 for d in unknown_detections:
                     try:
@@ -191,25 +193,25 @@ def add_face_from_detection():
                             
                         d_path = os.path.join(storage_root, 'detections', d.image_path)
                         if not os.path.exists(d_path):
-                            db.session.delete(d)  # Cleanup broken record
+                            db.session.delete(d)  
                             continue
                         
                         d_hash = imagehash.phash(Image.open(d_path))
                         hash_diff = source_hash - d_hash
                         
                         if hash_diff < 15:
-                            print(f"Removing similar detection {d.id} (hash diff: {hash_diff})")
+                            logger.info(f"Removing similar detection {d.id} (hash diff: {hash_diff})")
                             os.remove(d_path)
                             db.session.delete(d)
                             deleted_count += 1
                     except Exception as cmp_err:
-                        print(f"Error comparing detection {d.id}: {cmp_err}")
+                        logger.error(f"Error comparing detection {d.id}: {cmp_err}")
                         continue
             else:
-                print(f"Source file not found: {source_path}")
+                logger.info(f"Source file not found: {source_path}")
                         
         except ImportError:
-            print("imagehash not installed - falling back to simple cleanup")
+            logger.warning("imagehash not installed - falling back to simple cleanup")
             try:
                 source_det_path = os.path.join(os.path.dirname(current_app.root_path), 'storage', 'detections', detection.image_path)
                 if os.path.exists(source_det_path):
@@ -217,12 +219,12 @@ def add_face_from_detection():
                 db.session.delete(detection)
                 deleted_count = 1
             except Exception as del_err:
-                print(f"Error during fallback cleanup: {del_err}")
+                logger.error(f"Error during fallback cleanup: {del_err}")
         except Exception as hash_err:
-            print(f"Error during hash-based cleanup: {hash_err}")
+            logger.error(f"Error during hash-based cleanup: {hash_err}")
                 
         db.session.commit()
-        print(f"Cleaned up {deleted_count} detection(s) for {name}")
+        logger.info(f"Cleaned up {deleted_count} detection(s) for {name}")
 
         return jsonify({'success': True, 'face': new_face.to_dict(), 'cleaned_up': deleted_count}), 201
 

@@ -16,25 +16,19 @@ def get_notification_settings():
 
     settings = NotificationSetting.query.filter_by(user_id=user.id).all()
     
-    # Define all default supported settings
     defaults = ['person', 'car', 'Face: Unknown', 'Face: Known', 'cat', 'dog', 'bird', 'horse']
     
-    # Default settings if none exist
     if not settings:
         settings_list = []
         for label in defaults:
             settings_list.append({'label': label, 'enabled': True})
         return jsonify({'success': True, 'settings': settings_list})
 
-    # Merge missing defaults for existing users
     existing_labels = {s.label for s in settings}
     merged_settings = [s.to_dict() for s in settings]
     
     missing_defaults = [d for d in defaults if d not in existing_labels]
     
-    # Add missing defaults (enabled by default? or disabled? Let's say disabled for now to not spam, or enabled? User asked to add them. Let's enable 'cat', 'dog' etc by default if new.)
-    # Actually, if I add them to the response, they won't be saved until the user clicks save in the UI. 
-    # But the UI renders based on this response.
     for label in missing_defaults:
         merged_settings.append({'label': label, 'enabled': True})
 

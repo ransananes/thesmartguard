@@ -25,8 +25,8 @@ class Camera(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     location = db.Column(db.String(100))
-    ip_address = db.Column(db.String(50), nullable=True)  # New field
-    port = db.Column(db.Integer, nullable=True)          # New field
+    ip_address = db.Column(db.String(50), nullable=True)
+    port = db.Column(db.Integer, nullable=True)   
     stream_url = db.Column(db.String(500), nullable=False)
     status = db.Column(db.String(20), default='online')
 
@@ -46,7 +46,7 @@ class Detection(db.Model):
     camera_id = db.Column(db.Integer, db.ForeignKey('camera.id'), nullable=False)
     label = db.Column(db.String(50), nullable=False)
     confidence = db.Column(db.Float, nullable=False)
-    image_path = db.Column(db.String(255), nullable=True) # New field
+    image_path = db.Column(db.String(255), nullable=True) 
     timestamp = db.Column(db.DateTime, server_default=db.func.now())
 
     camera = db.relationship('Camera', backref=db.backref('detections', lazy=True))

@@ -1,6 +1,7 @@
 import cv2
 import time
 import threading
+import logging
 import face_recognition
 import numpy as np
 import pickle
@@ -13,6 +14,8 @@ from app.models import Detection, Camera, KnownFace
 from flask import current_app
 import datetime
 import pytz
+
+logger = logging.getLogger(__name__)
 
 class VideoProcessor:
     def __init__(self, app):
@@ -54,14 +57,14 @@ class VideoProcessor:
                      if settings:
                          self.update_settings(settings)
                      else:
-                         print("No settings found in DB, using defaults.")
+                         logger.info("No settings found in DB, using defaults.")
                          defaults = [{'label': 'person', 'enabled': True}, 
                                      {'label': 'car', 'enabled': True},
                                      {'label': 'Face: Unknown', 'enabled': True},
                                      {'label': 'Face: Known', 'enabled': True}]
-                         self.update_settings(defaults) # update_settings handles dicts too
+                         self.update_settings(defaults)
             except Exception as e:
-                print(f"Failed to load settings on init: {e}")
+                logger.error(f"Failed to load settings on init: {e}")
 
     def update_settings(self, settings):
         """
@@ -83,13 +86,13 @@ class VideoProcessor:
                     else:
                         self.enabled_labels.add(label.lower())
             
-            print(f"Updated settings: Labels={self.enabled_labels}, DetectOthers={self.detect_others}")
+            logger.info(f"Updated settings: Labels={self.enabled_labels}, DetectOthers={self.detect_others}")
 
     def reload_faces(self):
         """Signal the processing loop to reload faces safely."""
         with self.lock:
             self.reload_faces_needed = True
-        print("Signal sent: Reload faces on next frame.")
+        logger.info("Signal sent: Reload faces on next frame.")
 
     def _perform_face_reload(self):
         """Internal method to actually load from DB. Call this from the processing thread or init."""
@@ -104,9 +107,9 @@ class VideoProcessor:
                 for face in faces:
                     self.known_face_names.append(face.name)
                     self.known_face_encodings.append(pickle.loads(face.encoding) if isinstance(face.encoding, bytes) else face.encoding)
-                print(f"Loaded {len(self.known_face_names)} known faces.")
+                logger.info(f"Loaded {len(self.known_face_names)} known faces.")
         except Exception as e:
-            print(f"Error loading faces: {e}")
+            logger.error(f"Error loading faces: {e}")
 
     def start_processing(self, camera_id, stream_url, camera_name="Camera"):
         if self.processing:
@@ -125,7 +128,7 @@ class VideoProcessor:
         self.thread = threading.Thread(target=self._process_stream)
         self.thread.daemon = True
         self.thread.start()
-        print(f"Started processing for camera {camera_name} ({camera_id}) at {stream_url}")
+        logger.info(f"Started processing for camera {camera_name} ({camera_id}) at {stream_url}")
 
     def stop_processing(self):
         self.processing = False
@@ -136,14 +139,13 @@ class VideoProcessor:
         with self.lock:
             self.last_frame = None
             
-        print("Stopped processing.")
+        logger.info("Stopped processing.")
 
     def get_frame(self):
         with self.lock:
             if self.last_frame is None:
                 return None
             
-            # Encode frame to jpg
             ret, buffer = cv2.imencode('.jpg', self.last_frame)
             if not ret:
                 return None
@@ -178,7 +180,7 @@ class VideoProcessor:
                 try:
                     results = self.model.track(frame, persist=True, verbose=False, conf=0.4, tracker="bytetrack.yaml")
                 except Exception as e:
-                     print(f"Tracking error: {e}")
+                     logger.error(f"Tracking error: {e}")
 
                      results = self.model(frame, verbose=False, conf=0.4)
                 
@@ -220,7 +222,6 @@ class VideoProcessor:
 
                         color = (0, 0, 255)
                         
-                        # FACE RECOGNITION LOGIC (Only for 'person')
                         if label == 'person':
                             name = "Checking..."
                             
@@ -326,7 +327,6 @@ class VideoProcessor:
         return "Unknown", None
 
     def _process_object_alert(self, label, conf, current_time, camera_id):
-        # Alert Logic
         alert_key = f"Object: {label}"
         last_seen = self.last_detection_alert.get(alert_key, 0)
         time_since_seen = current_time - last_seen
@@ -344,7 +344,7 @@ class VideoProcessor:
                  timestamp=now_jerusalem
              )
              self._save_detections_to_db([new_detection])
-             print(f"ALERT TRIGGERED: {label} (Gap: {time_since_seen:.2f}s) at {now_jerusalem}")
+             logger.info(f"ALERT TRIGGERED: {label} (Gap: {time_since_seen:.2f}s) at {now_jerusalem}")
 
     def _process_face_alert_v2(self, name, track_id, frame, current_time, x1, y1, x2, y2):
         face_label = f"Face: {name}"
@@ -356,18 +356,15 @@ class VideoProcessor:
         if not should_alert:
             return
 
-        # Per-track debounce: Only 1 detection per tracked person every 5 seconds
-        # This prevents the same face from being added multiple times
         track_cooldown_key = f"track_{track_id}"
         last_track_alert = self.last_detection_alert.get(track_cooldown_key, 0)
         
-        # Use 5 second cooldown for individual tracks
         TRACK_COOLDOWN = 5
         
         if current_time - last_track_alert < TRACK_COOLDOWN:
             return
         
-        print(f"[FACE DETECTION] {name} (track: {track_id}) - Creating detection...")
+        logger.info(f"[FACE DETECTION] {name} (track: {track_id}) - Creating detection...")
         self.last_detection_alert[track_cooldown_key] = current_time
 
         tz = pytz.timezone('Asia/Jerusalem')
@@ -412,11 +409,11 @@ class VideoProcessor:
                     cv2.imwrite(filepath, final_crop)
                     image_path = filename
                 else:
-                    print(f"Skipping alert for {name}: No face found in crop.")
+                    logger.info(f"Skipping alert for {name}: No face found in crop.")
                     return
 
         except Exception as e:
-            print(f"Error saving face crop: {e}")
+            logger.error(f"Error saving face crop: {e}")
             image_path = None
 
         dets = [Detection(
@@ -427,7 +424,7 @@ class VideoProcessor:
             image_path=image_path
         )]
         self._save_detections_to_db(dets)
-        print(f"ALERT TRIGGERED: {alert_label} (Track: {track_id}, Cooldown: {TRACK_COOLDOWN}s) at {now_jerusalem}")
+        logger.info(f"ALERT TRIGGERED: {alert_label} (Track: {track_id}, Cooldown: {TRACK_COOLDOWN}s) at {now_jerusalem}")
 
     def clear_all_data(self):
         """Clears all detections, known faces, and internal tracking state."""
@@ -441,20 +438,17 @@ class VideoProcessor:
                 num_detections = Detection.query.delete()
                 num_faces = KnownFace.query.delete()
                 db.session.commit()
-                print(f"CLEARED DATA: {num_detections} detections, {num_faces} known faces removed.")
+                logger.info(f"CLEARED DATA: {num_detections} detections, {num_faces} known faces removed.")
                 
-                # Reload faces (which should be empty now)
                 self.known_face_encodings = []
                 self.known_face_names = []
             except Exception as e:
                 db.session.rollback()
-                print(f"Error clearing data: {e}")
+                logger.error(f"Error clearing data: {e}")
                 
-            # Clear files from disk
             try:
                 storage_root = os.path.join(os.path.dirname(self.app.root_path), 'storage')
                 
-                # Clear Detections
                 det_folder = os.path.join(storage_root, 'detections')
                 if os.path.exists(det_folder):
                     for f in os.listdir(det_folder):
@@ -463,7 +457,6 @@ class VideoProcessor:
                                 os.remove(os.path.join(det_folder, f))
                             except: pass
                             
-                # Clear Faces
                 face_folder = os.path.join(storage_root, 'faces')
                 if os.path.exists(face_folder):
                     for f in os.listdir(face_folder):
@@ -472,9 +465,9 @@ class VideoProcessor:
                                 os.remove(os.path.join(face_folder, f))
                             except: pass
                             
-                print("CLEARED DISK: Removed images from detections and faces folders.")
+                logger.info("CLEARED DISK: Removed images from detections and faces folders.")
             except Exception as e:
-                print(f"Error clearing disk files: {e}")
+                logger.error(f"Error clearing disk files: {e}")
 
 
     def _save_detections_to_db(self, detections):
@@ -482,7 +475,7 @@ class VideoProcessor:
              for d in detections:
                  db.session.add(d)
              db.session.commit()
-             print(f"Saved {len(detections)} detections.")
+             logger.info(f"Saved {len(detections)} detections.")
          except Exception as e:
-             print(f"Error saving detections: {e}")
+             logger.error(f"Error saving detections: {e}")
              db.session.rollback()

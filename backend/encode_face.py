@@ -1,17 +1,14 @@
-"""
-Standalone face encoding script.
-Run in a subprocess to isolate crashes from the main Flask process.
-Usage: python encode_face.py <image_path>
-Outputs: JSON with encoding or error
-"""
 import sys
 import json
 import face_recognition
 import numpy as np
+import logging  
+
+logger = logging.getLogger(__name__)
 
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "No image path provided"}))
+        logger.info(json.dumps({"error": "No image path provided"}))
         sys.exit(1)
     
     image_path = sys.argv[1]
@@ -21,13 +18,12 @@ def main():
         encodings = face_recognition.face_encodings(img)
         
         if encodings:
-            # Convert numpy array to list for JSON serialization
             encoding_list = encodings[0].tolist()
-            print(json.dumps({"success": True, "encoding": encoding_list}))
+            logger.info(json.dumps({"success": True, "encoding": encoding_list}))
         else:
-            print(json.dumps({"success": False, "error": "No face found in image"}))
+            logger.info(json.dumps({"success": False, "error": "No face found in image"}))
     except Exception as e:
-        print(json.dumps({"success": False, "error": str(e)}))
+        logger.error(json.dumps({"success": False, "error": str(e)}))
         sys.exit(1)
 
 if __name__ == "__main__":

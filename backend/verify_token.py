@@ -6,7 +6,6 @@ BASE_URL = "http://localhost:5000/api"
 def test_verify():
     print("Testing /verify endpoint...")
     try:
-        # 1. Login to get token
         login_res = requests.post(f"{BASE_URL}/login", json={
             "username": "root",
             "password": "root"
@@ -21,7 +20,6 @@ def test_verify():
             print("[FAIL] No token received")
             return
 
-        # 2. Verify with valid token
         headers = {"Authorization": f"Bearer {token}"}
         verify_res = requests.get(f"{BASE_URL}/verify", headers=headers)
         
@@ -31,7 +29,6 @@ def test_verify():
             print(f"[FAIL] Valid token verification failed: {verify_res.status_code}")
             print(verify_res.text)
 
-        # 3. Verify with invalid token
         headers_inv = {"Authorization": "Bearer invalid-token"}
         verify_inv_res = requests.get(f"{BASE_URL}/verify", headers=headers_inv)
         

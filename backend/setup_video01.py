@@ -1,9 +1,6 @@
 import os
 import sys
 
-# Ensure backend directory is in python path
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
 from app import create_app
 from app.extensions import db
 from app.models import Camera

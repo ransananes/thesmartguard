@@ -6,12 +6,10 @@ from app import create_app
 from app.models import Detection, KnownFace
 from app.extensions import db
 
-# Initialize Flask App
 app = create_app()
 
 def debug_cleanup_logic(detection_id):
     with app.app_context():
-        # 1. Get the source detection (the one we want to turn into a KnownFace)
         source_det = Detection.query.get(detection_id)
         if not source_det:
             print("Source detection not found.")
@@ -19,7 +17,6 @@ def debug_cleanup_logic(detection_id):
 
         print(f"Source Detection: ID={source_det.id}, Path={source_det.image_path}")
         
-        # Load encoding for source
         source_real_path = os.path.join(app.root_path, 'static', 'detections', source_det.image_path)
         if not os.path.exists(source_real_path):
              print(f"File missing at {source_real_path}")
@@ -34,7 +31,6 @@ def debug_cleanup_logic(detection_id):
             
         source_encoding = source_encs[0]
         
-        # 2. Find other "Unknown" faces
         unknowns = Detection.query.filter_by(label="Face: Unknown").all()
         print(f"Found {len(unknowns)} total unknown detections.")
         

@@ -1,15 +1,14 @@
 from app import create_app
 from app.extensions import db
 from app.video_processor import VideoProcessor
+import logging
+logger = logging.getLogger(__name__)
 
 app = create_app()
 with app.app_context():
-    print("Initializing VideoProcessor...")
-    # Mocking app context for video processor init if needed, but we just need clear_all_data
-    # Actually VideoProcessor needs app to be passed in invalid state? 
-    # Just manual init
+    logger.info("Initializing VideoProcessor...")
     vp = VideoProcessor(app)
     
-    print("Calling clear_all_data()...")
+    logger.info("Calling clear_all_data()...")
     vp.clear_all_data()
-    print("Done.")
+    logger.info("Done.")
