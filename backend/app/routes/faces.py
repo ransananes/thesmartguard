@@ -1,11 +1,10 @@
 import os
 import uuid
-import subprocess
-import json
 import logging
 import face_recognition
 import numpy as np
 import pickle
+import cv2
 from PIL import Image
 import imagehash
 import shutil
@@ -15,6 +14,43 @@ from app.models import KnownFace, User, Detection
 from app.extensions import db
 
 logger = logging.getLogger(__name__)
+
+def detect_face_with_yolo(image_path):
+    """
+    Uses the video processor's YOLO face model to detect faces.
+    Returns face locations in face_recognition format: (top, right, bottom, left)
+    """
+    if not hasattr(current_app, 'video_processor') or not current_app.video_processor:
+        logger.warning("No video_processor available, falling back to face_recognition detection")
+        return None
+    
+    face_model = current_app.video_processor.face_model
+    if face_model is None:
+        logger.warning("No face_model available, falling back to face_recognition detection")
+        return None
+    
+    try:
+        img_bgr = cv2.imread(image_path)
+        if img_bgr is None:
+            return None
+            
+        results = face_model(img_bgr, verbose=False, conf=0.5)
+        
+        face_locations = []
+        for result in results:
+            if result.boxes is not None and len(result.boxes) > 0:
+                for box in result.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    face_locations.append((y1, x2, y2, x1))
+        
+        if face_locations:
+            logger.info(f"YOLO detected {len(face_locations)} face(s)")
+            return face_locations
+        return None
+        
+    except Exception as e:
+        logger.error(f"YOLO face detection failed: {e}")
+        return None
 
 faces_bp = Blueprint('faces', __name__, url_prefix='/api')
 
@@ -52,17 +88,24 @@ def add_face():
         
         file.save(save_path)
         
-
+        # Load image for encoding
         img = face_recognition.load_image_file(save_path)
-
-        encodings = face_recognition.face_encodings(img)
+        
+        # Try YOLO face detection first, fall back to face_recognition
+        face_locations = detect_face_with_yolo(save_path)
+        
+        if face_locations:
+            encodings = face_recognition.face_encodings(img, face_locations)
+        else:
+            # Fallback to face_recognition's built-in detection
+            encodings = face_recognition.face_encodings(img)
 
         if not encodings:
             os.remove(save_path)
             return jsonify({'success': False, 'message': 'No face found in image'}), 400
         
-
         encoding = encodings[0]
+        logger.info(f"Successfully encoded face (sum: {np.sum(np.abs(encoding)):.4f})")
         
         new_face = KnownFace(
             name=name, 
@@ -125,35 +168,32 @@ def add_face_from_detection():
         logger.info("Step 3: Copying file...")
         shutil.copy2(source_path, dest_path)
         
-        logger.info("Step 4: Encoding face (in subprocess to prevent crashes)...") 
+        logger.info("Step 4: Encoding face with YOLO detection...") 
         
         try:
-            encode_script = os.path.join(os.path.dirname(current_app.root_path), 'encode_face.py')
-            result = subprocess.run(
-                ['python', encode_script, dest_path],
-                capture_output=True,
-                text=True,
-                timeout=30  
-            )
+            img = face_recognition.load_image_file(dest_path)
             
-            if result.returncode == 0 and result.stdout:
-                data = json.loads(result.stdout)
-                if data.get('success') and data.get('encoding'):
-                    encoding = np.array(data['encoding'])
-                    logger.info(f"Successfully encoded face (size: {len(encoding)})")
-                else:
-                    logger.error(f"Encoding failed: {data.get('error', 'Unknown error')}")
-                    encoding = np.zeros(128)
+            # Try YOLO face detection first
+            face_locations = detect_face_with_yolo(dest_path)
+            
+            if face_locations:
+                encodings = face_recognition.face_encodings(img, face_locations)
             else:
-                logger.error(f"Subprocess failed: {result.stderr}")
-                encoding = np.zeros(128)
+                # Fallback to face_recognition's built-in detection
+                encodings = face_recognition.face_encodings(img)
+            
+            if encodings:
+                encoding = encodings[0]
+                logger.info(f"Successfully encoded face (size: {len(encoding)}, sum: {np.sum(np.abs(encoding)):.4f})")
+            else:
+                logger.error("No face found in the detection image")
+                os.remove(dest_path)
+                return jsonify({'success': False, 'message': 'No face found in the detection image'}), 400
                 
-        except subprocess.TimeoutExpired:
-            logger.error("Encoding timed out, using dummy encoding")
-            encoding = np.zeros(128)
         except Exception as enc_err:
             logger.error(f"Error during face encoding: {enc_err}")
-            encoding = np.zeros(128)
+            os.remove(dest_path)
+            return jsonify({'success': False, 'message': f'Failed to encode face: {str(enc_err)}'}), 500
         
         logger.info("Step 5: Saving to database...")
         new_face = KnownFace(

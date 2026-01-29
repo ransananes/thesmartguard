@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import VideoPlayer from '../components/VideoPlayer';
+import VideoLoading from '../components/VideoLoading';
 import Header from '../components/Header';
 import StatCard from '../components/StatCard';
 import RecognizedFaces from '../components/RecognizedFaces';
 import RecentActivity from '../components/RecentActivity';
 import AddCameraModal from '../components/AddCameraModal';
 import SettingsModal from '../components/SettingsModal';
-import { SYSTEM_STATUS, MOCK_STREAM_URL } from '../constants';
+import { SYSTEM_STATUS } from '../constants';
 import { api } from '../services/api';
 import { Activity, Users, AlertTriangle, Lock, Plus, Trash2, Camera, Settings } from 'lucide-react';
 
@@ -127,10 +128,12 @@ const StatusMonitor = () => {
                                 Add Camera
                             </button>
                         </div>
-                    ) : (
+                    ) : selectedCamera ? (
                         <VideoPlayer 
-                            streamUrl={selectedCamera ? `http://localhost:5000/api/video_feed/${selectedCamera.id}` : MOCK_STREAM_URL} 
+                            streamUrl={`http://localhost:5000/api/video_feed/${selectedCamera.id}`} 
                         />
+                    ) : (
+                        <VideoLoading />
                     )}
                     
 

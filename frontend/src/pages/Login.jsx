@@ -82,7 +82,7 @@ const Login = ({ onLogin }) => {
                             transition={{ delay: 0.3 }}
                             className="text-3xl font-bold tracking-tight text-center bg-clip-text text-transparent bg-gradient-to-r from-white via-white to-white/50"
                         >
-                            CLASSIFIED ACCESS
+                            The Smart Guard System
                         </motion.h1>
                         <motion.p 
                             initial={{ opacity: 0 }}
@@ -90,7 +90,7 @@ const Login = ({ onLogin }) => {
                             transition={{ delay: 0.4 }}
                             className="text-blue-200/40 text-sm mt-2 font-mono uppercase tracking-[0.2em]"
                         >
-                            The Smart Guard System
+                            Secure Connection
                         </motion.p>
                     </div>
 

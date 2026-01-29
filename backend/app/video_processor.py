@@ -9,6 +9,7 @@ import os
 import uuid
 from app.models import NotificationSetting, User
 from ultralytics import YOLO
+import torch
 from app.extensions import db
 from app.models import Detection, Camera, KnownFace
 from flask import current_app
@@ -20,7 +21,15 @@ logger = logging.getLogger(__name__)
 class VideoProcessor:
     def __init__(self, app):
         self.app = app
+        self.device = 'cuda'
+        
         self.model = YOLO('yolov8n.pt')
+        self.model.to(self.device)
+        logger.info(f"YOLO object model loaded on device: {self.device}")
+        
+        self.face_model = YOLO('yolov8n-face.pt')
+        self.face_model.to(self.device)
+        logger.info(f"YOLO face model loaded on device: {self.device}")
         self.processing = False
         self.thread = None
         self.camera_url = None
@@ -296,31 +305,47 @@ class VideoProcessor:
         crop_x2 = min(w, x2 + pad)
         crop_y2 = min(h, y2 + pad)
         
-
         person_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
         if person_crop.size == 0:
             return "Unknown", None
 
         rgb_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
         
-
-        crop_face_locations = face_recognition.face_locations(rgb_crop, number_of_times_to_upsample=1)
+        crop_face_locations = []
+        
+        if self.face_model is not None:
+            results = self.face_model(person_crop, verbose=False, conf=0.5)
+            for result in results:
+                if result.boxes is not None and len(result.boxes) > 0:
+                    for box in result.boxes:
+                        fx1, fy1, fx2, fy2 = map(int, box.xyxy[0].tolist())
+                        crop_face_locations.append((fy1, fx2, fy2, fx1))
+        else:
+            crop_face_locations = face_recognition.face_locations(rgb_crop, number_of_times_to_upsample=1)
+        
         if not crop_face_locations:
+            # logger.debug("No face found in person crop.")
             return "Unknown", None
             
         crop_face_encodings = face_recognition.face_encodings(rgb_crop, crop_face_locations)
         
-
         if crop_face_encodings:
             face_encoding = crop_face_encodings[0]
-            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding)
+            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.55)
             name = "Unknown"
             face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
             
             if len(face_distances) > 0:
                 best_match_index = np.argmin(face_distances)
+                min_dist = face_distances[best_match_index]
+                
                 if matches[best_match_index]:
                     name = self.known_face_names[best_match_index]
+                    logger.info(f"MATCH FOUND: {name} with dist {min_dist:.4f}")
+                else:
+                    logger.info(f"No match. Best dist: {min_dist:.4f} (Threshold: 0.55)")
+            else:
+                logger.info("No known faces loaded to compare against.")
             
             return name, face_encoding
             
@@ -349,9 +374,10 @@ class VideoProcessor:
     def _process_face_alert_v2(self, name, track_id, frame, current_time, x1, y1, x2, y2):
         face_label = f"Face: {name}"
         is_unknown = (name == "Unknown")
-        alert_label = "Face: Unknown" if is_unknown else "Face: Known"
+        alert_category = "Face: Unknown" if is_unknown else "Face: Known"
         
-        should_alert = (name == "Unknown") and (alert_label.lower() in self.enabled_labels)
+        # Check if the category (Face: Known / Face: Unknown) is enabled in settings
+        should_alert = (alert_category.lower() in self.enabled_labels)
         
         if not should_alert:
             return
@@ -379,7 +405,7 @@ class VideoProcessor:
         try:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             
-
+            # Save crop logic
             h, w, _ = frame.shape
             y1_c, y2_c = max(0, y1), min(h, y2)
             x1_c, x2_c = max(0, x1), min(w, x2)
@@ -395,7 +421,6 @@ class VideoProcessor:
                 if face_locs:
                     top, right, bottom, left = face_locs[0]
                     
-
                     pad = 20
                     f_h, f_w, _ = person_crop.shape
                     
@@ -418,13 +443,13 @@ class VideoProcessor:
 
         dets = [Detection(
             camera_id=self.camera_id, 
-            label=alert_label, 
+            label=face_label,  
             confidence=1.0, 
             timestamp=now_jerusalem,
             image_path=image_path
         )]
         self._save_detections_to_db(dets)
-        logger.info(f"ALERT TRIGGERED: {alert_label} (Track: {track_id}, Cooldown: {TRACK_COOLDOWN}s) at {now_jerusalem}")
+        logger.info(f"ALERT TRIGGERED: {face_label} (Track: {track_id}, Cooldown: {TRACK_COOLDOWN}s) at {now_jerusalem}")
 
     def clear_all_data(self):
         """Clears all detections, known faces, and internal tracking state."""
