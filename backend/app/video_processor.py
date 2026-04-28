@@ -315,9 +315,19 @@ class VideoProcessor:
             self.processing = False
             return
 
+        # Attempt to determine stream FPS for throttling (essential for files)
+        stream_fps = cap.get(cv2.CAP_PROP_FPS)
+        if stream_fps <= 0:
+            stream_fps = Config.DEFAULT_FPS
+        
+        frame_delay = 1.0 / stream_fps
+        logger.info(f'Capture thread started: target_fps={stream_fps:.1f}, delay={frame_delay:.4f}s')
+
         consecutive_failures = 0
 
         while self.processing:
+            start_time = time.time()
+            
             ret, frame = cap.read()
             if not ret:
                 consecutive_failures += 1
@@ -344,6 +354,12 @@ class VideoProcessor:
                     self._frame_queue.put_nowait(frame)
                 except queue.Full:
                     pass
+            
+            # Throttle the loop to match the stream's FPS
+            elapsed = time.time() - start_time
+            sleep_time = max(0, frame_delay - elapsed)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         cap.release()
         logger.info('Capture thread exited.')

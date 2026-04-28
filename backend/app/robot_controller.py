@@ -17,7 +17,7 @@ if not hasattr(inspect, 'getargspec'):
     # Python 3.11+ removed inspect.getargspec; pyfirmata still uses it.
     inspect.getargspec = inspect.getfullargspec
 
-import pyfirmata2 as pyfirmata
+import pyfirmata
 import serial.tools.list_ports
 
 logger = logging.getLogger(__name__)
@@ -67,10 +67,8 @@ class RobotController:
         self.stcp = None
         
         # Autonomous logic
-        self.autonomous_enabled = True
+        self.autonomous_enabled = False
         self._last_manual_override = 0.0
-        self._run_thread = False
-        self._thread: threading.Thread | None = None
 
         if self.port:
             with self._lock:
@@ -128,13 +126,6 @@ class RobotController:
             
             time.sleep(1) # wait for board to stabilize
             logger.info(f'RobotController connected to pyfirmata on {self.port}')
-            
-            # Start background loop
-            if not self._run_thread:
-                self._run_thread = True
-                self._thread = threading.Thread(target=self._autonomous_loop, daemon=True)
-                self._thread.start()
-                
             return True, f'Connected to {self.port}'
             
         except Exception as exc:
@@ -150,11 +141,6 @@ class RobotController:
             return self._connect_unlocked(port)
 
     def disconnect(self) -> tuple[bool, str]:
-        self._run_thread = False
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2)
-        self._thread = None        # allow reconnect to spawn a fresh thread
-
         with self._lock:
             if self.board:
                 try:
@@ -290,79 +276,6 @@ class RobotController:
             'autonomous': self.autonomous_enabled,
         }
 
-    # ------------------------------------------------------------------
-    # Autonomous Loop (Translated from Arduino)
-    # ------------------------------------------------------------------
-
-    def _autonomous_loop(self) -> None:
-        """Background loop running the obstacle avoidance logic."""
-        while self._run_thread:
-            if not self.is_connected:
-                time.sleep(1)
-                continue
-                
-            # If manual commands are received, pause autonomous behavior for 2 seconds
-            if time.time() - self._last_manual_override < 2.0 or not self.autonomous_enabled:
-                time.sleep(0.1)
-                continue
-                
-            try:
-                middle_distance = self.sr04_read()
-                
-                if middle_distance <= 25:
-                    self.motor(DIR_STOP, 0, 0)
-                    time.sleep(0.5)
-                    self.servo.write(10)
-                    time.sleep(0.5)
-                    right_distance = self.sr04_read()
-                    
-                    time.sleep(0.5)
-                    self.servo.write(90)
-                    time.sleep(0.5)
-                    self.servo.write(170)
-                    time.sleep(0.5)
-                    left_distance = self.sr04_read()
-                    
-                    time.sleep(0.5)
-                    self.servo.write(90)
-                    time.sleep(0.5)
-                    
-                    # Prevent overriding if manual command was sent during sleep
-                    if time.time() - self._last_manual_override < 2.0:
-                        continue
-                        
-                    if right_distance > left_distance:
-                        self.motor(DIR_STOP, 0, 0)
-                        time.sleep(0.1)
-                        self.motor(DIR_BACKWARD, 180, 180)
-                        time.sleep(1.0)
-                        self.motor(DIR_CLOCKWISE, 250, 250)
-                        time.sleep(0.6)
-                    elif right_distance < left_distance:
-                        self.motor(DIR_STOP, 0, 0)
-                        time.sleep(0.1)
-                        self.motor(DIR_BACKWARD, 180, 180)
-                        time.sleep(1.0)
-                        self.motor(DIR_CONTRAROTATE, 250, 250)
-                        time.sleep(0.6)
-                    elif right_distance < 20 or left_distance < 20:
-                        self.motor(DIR_BACKWARD, 180, 180)
-                        time.sleep(1.0)
-                        self.motor(DIR_CONTRAROTATE, 250, 250)
-                        time.sleep(0.6)
-                    else:
-                        self.motor(DIR_BACKWARD, 180, 180)
-                        time.sleep(1.0)
-                        self.motor(DIR_CLOCKWISE, 250, 250)
-                        time.sleep(0.6)
-                else:
-                    self.motor(DIR_FORWARD, 250, 250)
-                    time.sleep(0.1)
-                    
-            except Exception as e:
-                logger.error(f"Error in autonomous loop: {e}")
-                time.sleep(1)
 
 
-# Module-level singleton — imported by routes and VideoProcessor
 robot_controller = RobotController()

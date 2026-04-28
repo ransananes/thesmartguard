@@ -61,6 +61,8 @@ class Config:
     FACE_TOLERANCE: float = float(os.environ.get('FACE_TOLERANCE', '0.55'))
     # JPEG quality used when encoding frames for the live stream (1-100)
     STREAM_JPEG_QUALITY: int = int(os.environ.get('STREAM_JPEG_QUALITY', '70'))
+    # Default FPS to use if the stream doesn't report one (or for files)
+    DEFAULT_FPS: float = float(os.environ.get('DEFAULT_FPS', '30.0'))
     # Max frames to buffer in the capture→processing queue
     FRAME_QUEUE_SIZE: int = int(os.environ.get('FRAME_QUEUE_SIZE', '2'))
     # Max detections to buffer before writing to DB
