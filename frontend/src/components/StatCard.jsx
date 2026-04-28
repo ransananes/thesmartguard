@@ -3,10 +3,15 @@ import PropTypes from 'prop-types';
 
 const StatCard = ({ label, value, icon: Icon }) => {
     return (
-        <div className="bg-neutral-800/50 rounded-xl p-4 border border-white/5 backdrop-blur-sm">
-            <Icon className="w-5 h-5 text-neutral-400 mb-2" />
-            <div className="text-2xl font-bold">{value}</div>
-            <div className="text-xs text-neutral-500 uppercase tracking-widest">{label}</div>
+        <div className="glass-card p-5 group hover:border-purple-500/50 transition-all duration-300 hover:-translate-y-1">
+            <div className="flex items-center justify-between mb-3">
+                <div className="p-2 bg-purple-500/10 rounded-lg group-hover:bg-purple-500/20 transition-colors">
+                    <Icon className="w-5 h-5 text-purple-400" />
+                </div>
+                <div className="w-1.5 h-1.5 rounded-full bg-purple-500/50 group-hover:bg-purple-500 animate-pulse" />
+            </div>
+            <div className="text-3xl font-bold tracking-tight mb-1">{value}</div>
+            <div className="text-[10px] text-neutral-500 font-bold uppercase tracking-[0.2em]">{label}</div>
         </div>
     );
 };

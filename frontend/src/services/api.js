@@ -261,5 +261,56 @@ export const api = {
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || 'Failed to add face from detection');
         return data;
+    },
+
+    robot: {
+        getStatus: async () => {
+            const token = localStorage.getItem('token');
+            const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+            const response = await fetch(`${API_BASE_URL}/robot/status`, { headers });
+            return response.json();
+        },
+        connect: async (port) => {
+            const token = localStorage.getItem('token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            const response = await fetch(`${API_BASE_URL}/robot/connect`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ port })
+            });
+            return response.json();
+        },
+        disconnect: async () => {
+            const token = localStorage.getItem('token');
+            const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+            const response = await fetch(`${API_BASE_URL}/robot/disconnect`, {
+                method: 'POST',
+                headers
+            });
+            return response.json();
+        },
+        control: async (command) => {
+            const token = localStorage.getItem('token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            const response = await fetch(`${API_BASE_URL}/robot/control`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ command })
+            });
+            return response.json();
+        },
+        toggleFollow: async (enabled) => {
+            const token = localStorage.getItem('token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            const response = await fetch(`${API_BASE_URL}/robot/follow`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ enabled })
+            });
+            return response.json();
+        }
     }
 };

@@ -1,3 +1,70 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-dark: #050505;
+    --bg-card: rgba(17, 17, 17, 0.8);
+    --primary: #8b5cf6;
+    --primary-glow: rgba(139, 92, 246, 0.3);
+    --accent: #06b6d4;
+    --accent-glow: rgba(6, 182, 212, 0.3);
+    --border: rgba(255, 255, 255, 0.1);
+  }
+
+  body {
+    @apply bg-[#050505] text-neutral-100 antialiased selection:bg-purple-500/30;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-neutral-900/40 backdrop-blur-xl border border-white/10 rounded-2xl;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
+  }
+
+  .glow-purple {
+    box-shadow: 0 0 20px var(--primary-glow);
+  }
+
+  .glow-cyan {
+    box-shadow: 0 0 20px var(--accent-glow);
+  }
+
+  .btn-primary {
+    @apply relative overflow-hidden px-6 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl transition-all duration-300 font-medium active:scale-95;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-2.5 bg-neutral-800/50 hover:bg-neutral-800 text-neutral-300 hover:text-white rounded-xl border border-white/5 transition-all duration-300 font-medium;
+  }
+}
+
+/* Animated background */
+.bg-grid {
+  background-image: radial-gradient(circle at 2px 2px, rgba(255, 255, 255, 0.05) 1px, transparent 0);
+  background-size: 40px 40px;
+}
+
+.bg-gradient-glow {
+  background: radial-gradient(circle at 50% -20%, rgba(139, 92, 246, 0.15), transparent 80%),
+              radial-gradient(circle at 0% 100%, rgba(6, 182, 212, 0.1), transparent 80%);
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.scanline {
+  background: linear-gradient(to bottom, transparent, rgba(139, 92, 246, 0.1), transparent);
+  height: 100px;
+  width: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  animation: scanline 8s linear infinite;
+  pointer-events: none;
+}
