@@ -74,6 +74,11 @@ def create_app() -> Flask:
     def media_files(filename):
         return send_from_directory(Config.STORAGE_ROOT, filename)
 
+    # ── Robot controller ─────────────────────────────────────────────
+    if Config.ROBOT_HOST:
+        from app.robot_controller import robot_controller
+        robot_controller.connect(Config.ROBOT_HOST, Config.ROBOT_PORT)
+
     # ── Database + VideoProcessor ─────────────────────────────────────
     # db.create_all() MUST precede VideoProcessor construction because
     # the VP queries the DB during __init__ (face loading, settings).

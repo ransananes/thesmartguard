@@ -71,8 +71,11 @@ class Config:
     FACE_EXECUTOR_WORKERS: int = int(os.environ.get('FACE_EXECUTOR_WORKERS', '2'))
 
     # ------------------------------------------------------------------ #
-    # Robot
+    # Robot (ESP32-CAM WiFi TCP)
     # ------------------------------------------------------------------ #
+    # IP address printed by the ESP32 on boot — set in .env as ROBOT_HOST
+    ROBOT_HOST: str = os.environ.get('ROBOT_HOST', '192.168.1.64')
+    ROBOT_PORT: int = int(os.environ.get('ROBOT_PORT', '3000'))
     ROBOT_COMMAND_INTERVAL: float = float(
         os.environ.get('ROBOT_COMMAND_INTERVAL', '0.2')
     )

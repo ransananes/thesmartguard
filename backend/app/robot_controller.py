@@ -1,273 +1,182 @@
 """
-Serial/Firmata communication driver for the Arduino robot.
+WiFi TCP communication driver for the ESP32-CAM robot.
 
-Converts the previous Arduino C++ logic (Ultrasonic sensor, servo sweeping, and 
-shift-register motor control) into a Python implementation using `pyfirmata`.
-Seamlessly integrates with the backend's camera auto-follow logic.
+Keeps a single persistent TCP connection to the ESP32's command server
+(port 3000). Commands are sent fire-and-forget — we do NOT wait for the
+'OK:<cmd>' echo so the lock is released immediately and rapid commands
+(auto-follow) are never queued behind a blocking recv.
+
+A new connection is opened automatically if the socket breaks.
 """
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
-from typing import Optional, Tuple
-
-import inspect
-if not hasattr(inspect, 'getargspec'):
-    # Python 3.11+ removed inspect.getargspec; pyfirmata still uses it.
-    inspect.getargspec = inspect.getfullargspec
-
-import pyfirmata
-import serial.tools.list_ports
 
 logger = logging.getLogger(__name__)
 
-# Arduino Pin Definitions
-TRIG_PIN = 12
-ECHO_PIN = 13
-PWM1_PIN = 5
-PWM2_PIN = 6      
-SHCP_PIN = 2
-EN_PIN = 7
-DATA_PIN = 8
-STCP_PIN = 4
-SERVO_PIN = 9
-
-# Motor Directions (shift register values)
-DIR_FORWARD = 92
-DIR_BACKWARD = 163
-DIR_STOP = 0
-DIR_CONTRAROTATE = 172
-DIR_CLOCKWISE = 83
-
-VALID_COMMANDS = frozenset({'F', 'B', 'L', 'R', 'S'})
+VALID_COMMANDS  = frozenset({'F', 'B', 'L', 'R', 'S'})
+CMD_PORT        = 3000
+CONNECT_TIMEOUT = 5   # seconds for the initial TCP handshake
+SEND_TIMEOUT    = 2   # seconds for each sendall call
 
 
 class RobotController:
-    def __init__(self, port: str | None = None, baudrate: int = 57600, timeout: int = 1) -> None:
+    def __init__(self, host: str | None = None, port: int = CMD_PORT) -> None:
+        self.host = host
         self.port = port
-        self.baudrate = baudrate
-        self.timeout = timeout
-        
-        self.board: pyfirmata.Arduino | None = None
-        self._lock = threading.Lock()          # guards connect/disconnect
-        self._serial_lock = threading.Lock()   # guards shift-register / motor writes
-        self._sensor_lock = threading.Lock()   # guards trig pulse (not echo polling)
+
+        self._sock: socket.socket | None = None
+        self._lock = threading.Lock()
         self._last_command: str | None = None
-        
-        # Pins
-        self.servo = None
-        self.trig = None
-        self.echo = None
-        self.pwm1 = None
-        self.pwm2 = None
-        self.shcp = None
-        self.en = None
-        self.data = None
-        self.stcp = None
-        
-        # Autonomous logic
-        self.autonomous_enabled = False
+
+        self.autonomous_enabled    = False
         self._last_manual_override = 0.0
 
-        if self.port:
-            with self._lock:
-                self._connect_unlocked()
+        if self.host:
+            self.connect()
 
-    def _connect_unlocked(self, port: str | None = None) -> tuple[bool, str]:
-        if port:
-            self.port = port
+    # ------------------------------------------------------------------
+    # Connection management
+    # ------------------------------------------------------------------
 
-        if not self.port:
-            for p in serial.tools.list_ports.comports():
-                desc = p.description or ''
-                if any(kw in desc for kw in ('Arduino', 'CH340', 'USB Serial')):
-                    self.port = p.device
-                    break
-
-        if not self.port:
-            return False, 'No port specified and no Arduino detected.'
+    def _open_socket(self) -> tuple[bool, str]:
+        """Open a persistent TCP connection (lock must already be held)."""
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
 
         try:
-            if self.board:
-                try:
-                    self.board.exit()
-                except Exception:
-                    pass
-                    
-            # Connect via pyfirmata2
-            self.board = pyfirmata.Arduino(self.port, baudrate=self.baudrate)
-
-            # pyfirmata2 handles its own iterator thread automatically;
-            # start it explicitly for pyfirmata compatibility shim if needed.
-            try:
-                self.it = pyfirmata.util.Iterator(self.board)
-                self.it.start()
-            except AttributeError:
-                pass  # pyfirmata2 starts the read loop internally
-            
-            # Configure Pins
-            self.servo = self.board.get_pin(f'd:{SERVO_PIN}:s')
-            self.trig = self.board.get_pin(f'd:{TRIG_PIN}:o')
-            self.echo = self.board.get_pin(f'd:{ECHO_PIN}:i')
-            
-            self.pwm1 = self.board.get_pin(f'd:{PWM1_PIN}:p')
-            self.pwm2 = self.board.get_pin(f'd:{PWM2_PIN}:p')
-            
-            self.shcp = self.board.get_pin(f'd:{SHCP_PIN}:o')
-            self.en = self.board.get_pin(f'd:{EN_PIN}:o')
-            self.data = self.board.get_pin(f'd:{DATA_PIN}:o')
-            self.stcp = self.board.get_pin(f'd:{STCP_PIN}:o')
-            
-            # Initial setup
-            self.servo.write(90)
-            self.en.write(1) # Disable motors
-            self.trig.write(0)
-            
-            time.sleep(1) # wait for board to stabilize
-            logger.info(f'RobotController connected to pyfirmata on {self.port}')
-            return True, f'Connected to {self.port}'
-            
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(CONNECT_TIMEOUT)
+            s.connect((self.host, self.port))
+            s.settimeout(SEND_TIMEOUT)
+            self._sock = s
+            logger.info(f'RobotController connected to {self.host}:{self.port}')
+            return True, f'Connected to {self.host}:{self.port}'
         except Exception as exc:
             logger.error(f'RobotController connect error: {exc}')
+            self._sock = None
             return False, str(exc)
 
     @property
     def is_connected(self) -> bool:
-        return bool(self.board)
+        return self._sock is not None
 
-    def connect(self, port: str | None = None) -> tuple[bool, str]:
+    def connect(self, host: str | None = None, port: int | None = None) -> tuple[bool, str]:
+        if host:
+            self.host = host
+        if port:
+            self.port = port
+        if not self.host:
+            return False, 'No ESP32 IP address configured.'
         with self._lock:
-            return self._connect_unlocked(port)
+            return self._open_socket()
 
     def disconnect(self) -> tuple[bool, str]:
         with self._lock:
-            if self.board:
+            if self._sock:
                 try:
-                    self.board.exit()
+                    self._sock.sendall(b'S\n')   # stop the robot
                 except Exception:
                     pass
-                self.board = None
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+                self._sock = None
                 self._last_command = None
                 return True, 'Disconnected'
             return False, 'Not connected'
 
     # ------------------------------------------------------------------
-    # Hardware Control Methods
+    # Command sending
     # ------------------------------------------------------------------
-
-    def shift_out(self, val: int) -> None:
-        """Software shiftOut implementation for MSBFIRST."""
-        for i in range(8):
-            bit = (val >> (7 - i)) & 1
-            self.data.write(bit)
-            self.shcp.write(1)
-            self.shcp.write(0)
-
-    def motor(self, direction: int, speed1: int, speed2: int) -> None:
-        """Control motors via 74HCT595N shift register and PWM."""
-        if not self.is_connected:
-            return
-
-        with self._serial_lock:   # dedicated serial-write lock, never held by sr04_read
-            if direction == DIR_STOP:
-                # Disable motor driver outputs immediately
-                self.en.write(1)
-                self.pwm1.write(0)
-                self.pwm2.write(0)
-                self.stcp.write(0)
-                self.shift_out(DIR_STOP)
-                self.stcp.write(1)
-                return
-
-            # Enable outputs
-            self.en.write(0)
-
-            # PWM values in pyfirmata are 0.0–1.0
-            self.pwm1.write(speed1 / 255.0)
-            self.pwm2.write(speed2 / 255.0)
-
-            # Latch shift-register data
-            self.stcp.write(0)
-            self.shift_out(direction)
-            self.stcp.write(1)
-
-    def sr04_read(self) -> float:
-        """Read HC-SR04 ultrasonic sensor. Returns distance in cm."""
-        if not self.is_connected:
-            return 999.0
-
-        with self._sensor_lock:
-            self.trig.write(0)
-            time.sleep(0.000002)
-            self.trig.write(1)
-            time.sleep(0.000010)
-            self.trig.write(0)
-
-        timeout = time.time() + 0.05
-        while not self.echo.read():
-            if time.time() > timeout:
-                return 999.0
-
-        start_time = time.time()
-        timeout = time.time() + 0.05
-        # Wait for echo to go low
-        while self.echo.read():
-            if time.time() > timeout:
-                return 999.0
-
-        pulse_duration = time.time() - start_time
-        distance = pulse_duration * 17150  # 34300 cm/s ÷ 2
-        time.sleep(0.01)
-        return distance
 
     def send_command(self, command: str, force: bool = False) -> tuple[bool, str]:
         """
-        Send a single-character command to the robot.
-        Overrides the autonomous loop for 2 seconds.
+        Send one command over the persistent TCP connection.
+        Fire-and-forget — does NOT wait for the 'OK:' echo.
+        Reconnects automatically if the socket is broken.
         """
         command = command.strip().upper()
         if not command:
             return False, 'Empty command.'
 
         if not force and command == self._last_command:
-            # Reset manual override timer even if debounced
             self._last_manual_override = time.time()
             return True, f'Command {command} debounced (no change)'
 
         if not self.is_connected:
-            ok, msg = self.connect()   # connect() acquires _lock internally
+            ok, msg = self.connect()
             if not ok:
-                return False, f'Not connected to Arduino: {msg}'
+                return False, f'Not connected to ESP32: {msg}'
 
         self._last_manual_override = time.time()
         self._last_command = command
-        
+
+        with self._lock:
+            try:
+                self._sock.sendall(f'{command}\n'.encode())
+                return True, f'Command {command} sent'
+            except Exception as exc:
+                logger.error(f'RobotController send error: {exc}')
+                # Socket is dead — drop it and reconnect on next call
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+                self._sock = None
+                # Attempt one immediate reconnect and retry
+                ok, msg = self._open_socket()
+                if ok:
+                    try:
+                        self._sock.sendall(f'{command}\n'.encode())
+                        return True, f'Command {command} sent (after reconnect)'
+                    except Exception as exc2:
+                        logger.error(f'RobotController retry error: {exc2}')
+                        self._sock = None
+                        return False, str(exc2)
+                return False, f'Reconnect failed: {msg}'
+
+    # ------------------------------------------------------------------
+    # Ping / diagnostics
+    # ------------------------------------------------------------------
+
+    def ping(self) -> tuple[bool, str]:
+        """Send 'S' and read back the 'OK:S' echo to verify end-to-end connectivity."""
+        if not self.host:
+            return False, 'No ESP32 IP address configured.'
+
         try:
-            if command == 'F':
-                self.motor(DIR_FORWARD, 250, 250)
-            elif command == 'B':
-                self.motor(DIR_BACKWARD, 180, 180)
-            elif command == 'L':
-                self.motor(DIR_CONTRAROTATE, 250, 250)
-            elif command == 'R':
-                self.motor(DIR_CLOCKWISE, 250, 250)
-            elif command == 'S':
-                self.motor(DIR_STOP, 0, 0)
-                
-            return True, f'Command {command} executed'
+            t0 = time.time()
+            # Use a fresh socket so ping is independent of the main connection
+            with socket.create_connection((self.host, self.port), timeout=CONNECT_TIMEOUT) as s:
+                s.sendall(b'S\n')
+                s.settimeout(CONNECT_TIMEOUT)
+                response = s.recv(64).decode(errors='replace').strip()
+            rtt = int((time.time() - t0) * 1000)
+            return True, f'Ping OK — response: "{response}", RTT: {rtt} ms'
         except Exception as exc:
-            logger.error(f'RobotController command error: {exc}')
+            logger.error(f'RobotController ping error: {exc}')
             return False, str(exc)
+
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
 
     def get_status(self) -> dict:
         return {
-            'connected': self.is_connected,
-            'port': self.port,
-            'baudrate': self.baudrate,
+            'connected':  self.is_connected,
+            'host':       self.host,
+            'port':       self.port,
             'autonomous': self.autonomous_enabled,
         }
-
 
 
 robot_controller = RobotController()

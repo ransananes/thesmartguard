@@ -22,8 +22,9 @@ def get_status():
 @jwt_required()
 def connect():
     data = request.get_json(silent=True) or {}
+    host = data.get('host')
     port = data.get('port')
-    success, message = robot_controller.connect(port)
+    success, message = robot_controller.connect(host, int(port) if port else None)
     return jsonify({'success': success, 'message': message})
 
 
@@ -31,6 +32,13 @@ def connect():
 @jwt_required()
 def disconnect():
     success, message = robot_controller.disconnect()
+    return jsonify({'success': success, 'message': message})
+
+
+@robot_bp.route('/ping', methods=['GET'])
+@jwt_required()
+def ping():
+    success, message = robot_controller.ping()
     return jsonify({'success': success, 'message': message})
 
 
