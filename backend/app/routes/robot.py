@@ -8,7 +8,14 @@ robot_bp = Blueprint('robot', __name__, url_prefix='/api/robot')
 @robot_bp.route('/status', methods=['GET'])
 @jwt_required()
 def get_status():
-    return jsonify({'success': True, 'status': robot_controller.get_status()})
+    status = robot_controller.get_status()
+
+    # Merge follow state from VideoProcessor if available
+    vp = getattr(current_app, 'video_processor', None)
+    if vp:
+        status.update(vp.get_follow_status())
+
+    return jsonify({'success': True, 'status': status})
 
 
 @robot_bp.route('/connect', methods=['POST'])
@@ -53,14 +60,17 @@ def control():
 @jwt_required()
 def toggle_follow():
     data = request.get_json(silent=True) or {}
-    enabled = bool(data.get('enabled', False))
+    enabled    = bool(data.get('enabled', False))
+    known_only = bool(data.get('known_only', False))
 
     vp = getattr(current_app, 'video_processor', None)
     if not vp:
         return jsonify({'success': False, 'message': 'Video processor not active'}), 503
 
-    vp.set_auto_follow(enabled)
+    vp.set_auto_follow(enabled, known_only=known_only)
     return jsonify({
         'success': True,
-        'message': f"Auto-follow {'enabled' if enabled else 'disabled'}",
+        'message': f"Auto-follow {'enabled' if enabled else 'disabled'}, known_only={known_only}",
+        'auto_follow': enabled,
+        'known_only':  known_only,
     })

@@ -9,9 +9,9 @@ export const api = {
             },
             body: JSON.stringify({ username, password }),
         });
-        
+
         const data = await response.json();
-        
+
         if (!response.ok) {
             throw new Error(data.message || 'Login failed');
         }
@@ -28,7 +28,7 @@ export const api = {
         const response = await fetch(`${API_BASE_URL}/cameras`, {
             headers: headers
         });
-        
+
         if (!response.ok) {
             if (response.status === 401) {
                 localStorage.removeItem('token');
@@ -56,7 +56,7 @@ export const api = {
         });
 
         const data = await response.json();
-        
+
         if (!response.ok) {
             throw new Error(data.message || 'Failed to add camera');
         }
@@ -76,11 +76,11 @@ export const api = {
         });
 
         const data = await response.json();
-        
+
         if (!response.ok) {
             throw new Error(data.message || 'Failed to delete camera');
         }
-        return data; 
+        return data;
     },
 
     fetchStats: async () => {
@@ -93,7 +93,7 @@ export const api = {
         const response = await fetch(`${API_BASE_URL}/stats`, {
             headers: headers
         });
-        
+
         const data = await response.json();
         if (!response.ok) {
             throw new Error(data.message || 'Failed to fetch stats');
@@ -169,39 +169,39 @@ export const api = {
         const token = localStorage.getItem('token');
         const headers = {};
         if (token) {
-             headers['Authorization'] = `Bearer ${token}`;
+            headers['Authorization'] = `Bearer ${token}`;
         }
         const response = await fetch(`${API_BASE_URL}/detections/history`, { headers });
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || 'Failed to fetch history');
-        return data; 
+        return data;
     },
 
     getFaces: async () => {
         const token = localStorage.getItem('token');
         const headers = {};
         if (token) {
-             headers['Authorization'] = `Bearer ${token}`;
+            headers['Authorization'] = `Bearer ${token}`;
         }
         const response = await fetch(`${API_BASE_URL}/faces`, { headers });
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || 'Failed to fetch faces');
-        return data; 
+        return data;
     },
 
     addFace: async (formData) => {
         const token = localStorage.getItem('token');
         const headers = {};
         if (token) {
-             headers['Authorization'] = `Bearer ${token}`;
+            headers['Authorization'] = `Bearer ${token}`;
         }
-        
+
         const response = await fetch(`${API_BASE_URL}/faces`, {
             method: 'POST',
             body: formData,
             headers
         });
-        
+
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || 'Failed to add face');
         return data;
@@ -211,7 +211,7 @@ export const api = {
         const token = localStorage.getItem('token');
         const headers = {};
         if (token) {
-             headers['Authorization'] = `Bearer ${token}`;
+            headers['Authorization'] = `Bearer ${token}`;
         }
         const response = await fetch(`${API_BASE_URL}/faces/${id}`, {
             method: 'DELETE',
@@ -226,19 +226,19 @@ export const api = {
         const token = localStorage.getItem('token');
         const headers = {};
         if (token) {
-             headers['Authorization'] = `Bearer ${token}`;
+            headers['Authorization'] = `Bearer ${token}`;
         }
         const response = await fetch(`${API_BASE_URL}/live_status`, { headers });
         const data = await response.json();
         if (!response.ok) return { person_count: 0, faces: [] };
-        return data; 
+        return data;
     },
 
     getRecentDetections: async () => {
         const token = localStorage.getItem('token');
         const headers = {};
         if (token) {
-             headers['Authorization'] = `Bearer ${token}`;
+            headers['Authorization'] = `Bearer ${token}`;
         }
         const response = await fetch(`${API_BASE_URL}/detections`, { headers });
         const data = await response.json();
@@ -250,14 +250,14 @@ export const api = {
         const token = localStorage.getItem('token');
         const headers = { 'Content-Type': 'application/json' };
         if (token) {
-             headers['Authorization'] = `Bearer ${token}`;
+            headers['Authorization'] = `Bearer ${token}`;
         }
         const response = await fetch(`${API_BASE_URL}/faces/from_detection`, {
             method: 'POST',
             body: JSON.stringify({ detection_id: detectionId, name }),
             headers
         });
-        
+
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || 'Failed to add face from detection');
         return data;
@@ -301,14 +301,14 @@ export const api = {
             });
             return response.json();
         },
-        toggleFollow: async (enabled) => {
+        toggleFollow: async (enabled, knownOnly = false) => {
             const token = localStorage.getItem('token');
             const headers = { 'Content-Type': 'application/json' };
             if (token) headers['Authorization'] = `Bearer ${token}`;
             const response = await fetch(`${API_BASE_URL}/robot/follow`, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ enabled })
+                body: JSON.stringify({ enabled, known_only: knownOnly })
             });
             return response.json();
         }

@@ -24,6 +24,11 @@ const StatusMonitor = () => {
     const [statsData, setStatsData] = useState({ detections: 0, alerts: 0, active_cameras: 0 });
     const [sidebarTab, setSidebarTab] = useState('faces');
 
+    const [autoFollow, setAutoFollow] = useState(false);
+    const [knownOnly, setKnownOnly] = useState(false);
+    const [followTarget, setFollowTarget] = useState(null);
+
+
     const loadData = async () => {
         setIsLoading(true);
         try {
@@ -54,7 +59,7 @@ const StatusMonitor = () => {
 
     useEffect(() => {
         loadData();
-        
+
         const intervalId = setInterval(() => {
             api.fetchStats().then(response => {
                 if (response.stats) {
@@ -71,7 +76,7 @@ const StatusMonitor = () => {
         try {
             const response = await api.addCamera(cameraData);
             await loadData();
-            
+
             if (response.camera) {
                 setSelectedCamera(response.camera);
             }
@@ -95,6 +100,41 @@ const StatusMonitor = () => {
         }
     };
 
+
+    const handleFollowToggle = async () => {
+        const newState = !autoFollow;
+        try {
+            const res = await api.robot.toggleFollow(newState, knownOnly);
+            if (res.success) {
+                setAutoFollow(newState);
+                if (!newState) setFollowTarget(null);
+            }
+        } catch (e) {
+            console.error('Follow toggle failed', e);
+        }
+    };
+
+    const handleKnownOnlyChange = async (e) => {
+        const checked = e.target.checked;
+        setKnownOnly(checked);
+        if (autoFollow) {
+            await api.robot.toggleFollow(true, checked);
+        }
+    };
+
+
+    useEffect(() => {
+        if (!autoFollow) return;
+        const id = setInterval(async () => {
+            try {
+                const res = await api.robot.getStatus();
+                if (res.status?.follow_target !== undefined) {
+                    setFollowTarget(res.status.follow_target);
+                }
+            } catch (_) { }
+        }, 2000);
+        return () => clearInterval(id);
+    }, [autoFollow]);
     const stats = [
         { label: 'Active Cameras', value: statsData.active_cameras.toString(), icon: Activity },
         { label: 'Detections', value: statsData.detections.toString(), icon: Users },
@@ -139,41 +179,41 @@ const StatusMonitor = () => {
                             </div>
                         ) : selectedCamera ? (
                             <div className="glass-card overflow-hidden">
-                                <VideoPlayer 
-                                    streamUrl={`http://localhost:5000/api/video_feed/${selectedCamera.id}`} 
+                                <VideoPlayer
+                                    streamUrl={`http://localhost:5000/api/video_feed/${selectedCamera.id}`}
                                 />
                             </div>
                         ) : (
                             <VideoLoading />
                         )}
-                        
+
 
                         <div className="flex items-center gap-4">
-                                <div className="flex gap-2 overflow-x-auto py-2 scrollbar-none flex-1">
-                                     {cameras.map(cam => (
-                                         <div key={cam.id} className="relative group flex-shrink-0">
-                                             <button
-                                                onClick={() => setSelectedCamera(cam)}
-                                                className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-300 pr-10 border ${selectedCamera?.id === cam.id ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(139,92,246,0.2)]' : 'bg-neutral-900/50 border-white/5 text-neutral-400 hover:text-white hover:border-white/10'}`}
-                                             >
-                                                 {cam.name}
-                                             </button>
-                                             <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    if (window.confirm(`Are you sure you want to remove the camera "${cam.name}"?`)) {
-                                                        handleDeleteCamera(cam.id);
-                                                    }
-                                                }}
-                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-all opacity-0 group-hover:opacity-100"
-                                                title="Remove Camera"
-                                             >
-                                                 <Trash2 size={14} />
-                                             </button>
-                                         </div>
-                                     ))}
-                                </div>
-                            
+                            <div className="flex gap-2 overflow-x-auto py-2 scrollbar-none flex-1">
+                                {cameras.map(cam => (
+                                    <div key={cam.id} className="relative group flex-shrink-0">
+                                        <button
+                                            onClick={() => setSelectedCamera(cam)}
+                                            className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-300 pr-10 border ${selectedCamera?.id === cam.id ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(139,92,246,0.2)]' : 'bg-neutral-900/50 border-white/5 text-neutral-400 hover:text-white hover:border-white/10'}`}
+                                        >
+                                            {cam.name}
+                                        </button>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (window.confirm(`Are you sure you want to remove the camera "${cam.name}"?`)) {
+                                                    handleDeleteCamera(cam.id);
+                                                }
+                                            }}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-all opacity-0 group-hover:opacity-100"
+                                            title="Remove Camera"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+
                             <div className="flex items-center gap-2 bg-neutral-900/50 p-1 rounded-xl border border-white/5">
                                 <button
                                     onClick={() => setIsAddCameraModalOpen(true)}
@@ -182,7 +222,7 @@ const StatusMonitor = () => {
                                 >
                                     <Plus size={20} />
                                 </button>
-                                
+
                                 <button
                                     onClick={loadData}
                                     className="p-2.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors"
@@ -200,10 +240,50 @@ const StatusMonitor = () => {
                                 </button>
                             </div>
                         </div>
-                        
+                        <div className="flex items-center gap-3 p-3 bg-neutral-900/50 rounded-xl border border-white/5 mt-3">
+
+                            {/* Follow toggle button */}
+                            <button
+                                onClick={handleFollowToggle}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all border ${autoFollow
+                                        ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-[0_0_12px_rgba(139,92,246,0.3)]'
+                                        : 'border-white/10 text-neutral-400 hover:text-white hover:border-white/20'
+                                    }`}
+                            >
+                                <span className={autoFollow ? 'animate-pulse' : ''}>🤖</span>
+                                <span>{autoFollow ? 'Following...' : 'Auto Follow'}</span>
+                            </button>
+
+                            {/* Known only toggle */}
+                            <label className="flex items-center gap-2 text-sm text-neutral-400 cursor-pointer select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={knownOnly}
+                                    onChange={handleKnownOnlyChange}
+                                    className="w-4 h-4 accent-purple-500 cursor-pointer"
+                                />
+                                Known faces only
+                            </label>
+
+                            {/* Live follow target indicator */}
+                            {autoFollow && (
+                                <div className="ml-auto flex items-center gap-2">
+                                    {followTarget ? (
+                                        <span className="px-3 py-1 rounded-full text-xs font-semibold bg-green-500/20 border border-green-500/40 text-green-300">
+                                            👤 {followTarget}
+                                        </span>
+                                    ) : (
+                                        <span className="px-3 py-1 rounded-full text-xs font-semibold bg-neutral-800 border border-white/5 text-neutral-500">
+                                            Searching...
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                             {stats.map((stat, i) => (
-                                <StatCard 
+                                <StatCard
                                     key={i}
                                     label={stat.label}
                                     value={stat.value}
@@ -216,24 +296,23 @@ const StatusMonitor = () => {
 
                     <div className="lg:col-span-1 flex flex-col h-[600px] glass-card overflow-hidden">
 
-                         <div className="flex border-b border-white/5 p-1">
+                        <div className="flex border-b border-white/5 p-1">
                             {['faces', 'history', 'robot'].map((tab) => (
                                 <button
                                     key={tab}
                                     onClick={() => setSidebarTab(tab)}
-                                    className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-widest transition-all duration-300 rounded-lg ${
-                                        sidebarTab === tab 
-                                        ? 'bg-purple-600/20 text-purple-400 shadow-inner' 
+                                    className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-widest transition-all duration-300 rounded-lg ${sidebarTab === tab
+                                        ? 'bg-purple-600/20 text-purple-400 shadow-inner'
                                         : 'text-neutral-500 hover:text-neutral-300'
-                                    }`}
+                                        }`}
                                 >
                                     {tab}
                                 </button>
                             ))}
-                         </div>
+                        </div>
 
 
-                         <div className="flex-1 overflow-hidden relative">
+                        <div className="flex-1 overflow-hidden relative">
                             {sidebarTab === 'faces' ? (
                                 <div className="absolute inset-0 overflow-y-auto custom-scrollbar">
                                     <RecognizedFaces />
@@ -247,16 +326,16 @@ const StatusMonitor = () => {
                                     <RobotControl isActive={sidebarTab === 'robot'} />
                                 </div>
                             )}
-                         </div>
+                        </div>
                     </div>
                 </main>
 
-                <AddCameraModal 
-                    isOpen={isAddCameraModalOpen} 
-                    onClose={() => setIsAddCameraModalOpen(false)} 
-                    onAdd={handleAddCamera} 
+                <AddCameraModal
+                    isOpen={isAddCameraModalOpen}
+                    onClose={() => setIsAddCameraModalOpen(false)}
+                    onAdd={handleAddCamera}
                 />
-                
+
                 <SettingsModal
                     isOpen={isSettingsModalOpen}
                     onClose={() => setIsSettingsModalOpen(false)}

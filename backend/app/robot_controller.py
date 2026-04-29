@@ -197,17 +197,13 @@ class RobotController:
         if not self.is_connected:
             return 999.0
 
-        # Only lock during the brief trig pulse — release BEFORE echo busy-wait
-        # so that motor() / send_command() are never blocked by sensor polling.
         with self._sensor_lock:
             self.trig.write(0)
             time.sleep(0.000002)
             self.trig.write(1)
             time.sleep(0.000010)
             self.trig.write(0)
-        # _sensor_lock is now released — motor writes can proceed freely
 
-        # Wait for echo to go high (timeout 50 ms)
         timeout = time.time() + 0.05
         while not self.echo.read():
             if time.time() > timeout:
@@ -224,10 +220,6 @@ class RobotController:
         distance = pulse_duration * 17150  # 34300 cm/s ÷ 2
         time.sleep(0.01)
         return distance
-
-    # ------------------------------------------------------------------
-    # Command Interface (Auto-Follow & Manual)
-    # ------------------------------------------------------------------
 
     def send_command(self, command: str, force: bool = False) -> tuple[bool, str]:
         """
