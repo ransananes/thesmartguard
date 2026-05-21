@@ -25,6 +25,8 @@ def add_camera():
     port = data.get('port')
     username = (data.get('username') or '').strip()
     password = data.get('password') or ''
+    robot_host = (data.get('robot_host') or '').strip() or None
+    robot_port = data.get('robot_port')
 
     if not name or not ip_address:
         return jsonify({'success': False, 'message': 'name and ip_address are required'}), 400
@@ -44,6 +46,8 @@ def add_camera():
         port=port,
         stream_url=stream_url,
         status='online',
+        robot_host=robot_host,
+        robot_port=int(robot_port) if robot_port else None,
     )
 
     try:
@@ -51,6 +55,47 @@ def add_camera():
         db.session.commit()
         current_app.video_processor.start_processing(new_camera.id, stream_url, name)
         return jsonify({'success': True, 'camera': new_camera.to_dict()}), 201
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(exc)}), 500
+
+
+@cameras_bp.route('/cameras/<int:camera_id>', methods=['PUT'])
+@jwt_required()
+def update_camera(camera_id):
+    camera = db.session.get(Camera, camera_id)
+    if not camera:
+        return jsonify({'success': False, 'message': 'Camera not found'}), 404
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'success': False, 'message': 'Request body must be JSON'}), 400
+
+    name = (data.get('name') or '').strip()
+    stream_url = (data.get('stream_url') or '').strip()
+    location = (data.get('location') or '').strip() or None
+    robot_host = (data.get('robot_host') or '').strip() or None
+    robot_port = data.get('robot_port')
+
+    if not name:
+        return jsonify({'success': False, 'message': 'name is required'}), 400
+    if not stream_url:
+        return jsonify({'success': False, 'message': 'stream_url is required'}), 400
+
+    camera.name = name
+    camera.stream_url = stream_url
+    camera.location = location
+    camera.robot_host = robot_host
+    camera.robot_port = int(robot_port) if robot_port else None
+
+    try:
+        db.session.commit()
+
+        vp = getattr(current_app, 'video_processor', None)
+        if vp and vp.camera_id == camera_id:
+            vp.start_processing(camera_id, stream_url, name)
+
+        return jsonify({'success': True, 'camera': camera.to_dict()})
     except Exception as exc:
         db.session.rollback()
         return jsonify({'success': False, 'message': str(exc)}), 500

@@ -21,12 +21,15 @@ const RobotControl = ({ isActive = false }) => {
     const [isLoading, setIsLoading] = useState(false);
     const [activeCommand, setActiveCommand] = useState(null);
     const [autoFollow, setAutoFollow] = useState(false);
+    const [followUnknowns, setFollowUnknowns] = useState(false);
 
     const fetchStatus = useCallback(async () => {
         try {
             const res = await api.robot.getStatus();
             if (res.success) {
                 setStatus(res.status);
+                if (res.status.auto_follow !== undefined) setAutoFollow(res.status.auto_follow);
+                if (res.status.follow_unknowns !== undefined) setFollowUnknowns(res.status.follow_unknowns);
             }
         } catch (error) {
             console.error("Failed to fetch robot status", error);
@@ -97,6 +100,21 @@ const RobotControl = ({ isActive = false }) => {
             }
         } catch (error) {
             toast.error("Failed to toggle auto-follow");
+        }
+    };
+
+    const handleToggleFollowUnknowns = async () => {
+        const newState = !followUnknowns;
+        try {
+            const res = await api.robot.toggleFollowUnknowns(newState);
+            if (res.success) {
+                setFollowUnknowns(newState);
+                toast.success(newState ? 'Now tracking unknown persons' : 'Unknown tracking disabled');
+            } else {
+                toast.error(res.message);
+            }
+        } catch (error) {
+            toast.error("Failed to toggle follow-unknowns");
         }
     };
 
@@ -244,6 +262,34 @@ const RobotControl = ({ isActive = false }) => {
                     `}>
                         <motion.div
                             animate={{ x: autoFollow ? 16 : 0 }}
+                            className="w-4 h-4 bg-white rounded-full"
+                        />
+                    </div>
+                </div>
+
+                <div
+                    onClick={handleToggleFollowUnknowns}
+                    className={`
+                        p-4 rounded-xl flex items-center justify-between cursor-pointer transition-all border
+                        ${followUnknowns
+                            ? 'bg-red-600/10 border-red-500/50 text-red-400'
+                            : 'bg-neutral-800 border-white/5 text-neutral-400 hover:bg-neutral-700'
+                        }
+                    `}
+                >
+                    <div className="flex items-center gap-3">
+                        <div className={`text-lg leading-none ${followUnknowns ? 'animate-pulse' : ''}`}>🚨</div>
+                        <div>
+                            <h4 className="text-sm font-bold">Follow Unknown Person</h4>
+                            <p className="text-[10px] opacity-70">Robot intercepts unrecognised persons from static camera</p>
+                        </div>
+                    </div>
+                    <div className={`
+                        w-10 h-6 rounded-full p-1 transition-colors
+                        ${followUnknowns ? 'bg-red-500' : 'bg-neutral-600'}
+                    `}>
+                        <motion.div
+                            animate={{ x: followUnknowns ? 16 : 0 }}
                             className="w-4 h-4 bg-white rounded-full"
                         />
                     </div>

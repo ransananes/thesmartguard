@@ -63,6 +63,26 @@ export const api = {
         return data;
     },
 
+    updateCamera: async (cameraId, cameraData) => {
+        const token = localStorage.getItem('token');
+        const headers = { 'Content-Type': 'application/json' };
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
+        const response = await fetch(`${API_BASE_URL}/cameras/${cameraId}`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify(cameraData)
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.message || 'Failed to update camera');
+        }
+        return data;
+    },
+
     deleteCamera: async (cameraId) => {
         const token = localStorage.getItem('token');
         const headers = {};
@@ -309,6 +329,17 @@ export const api = {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ enabled, known_only: knownOnly })
+            });
+            return response.json();
+        },
+        toggleFollowUnknowns: async (enabled) => {
+            const token = localStorage.getItem('token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            const response = await fetch(`${API_BASE_URL}/robot/follow_unknowns`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ enabled })
             });
             return response.json();
         }

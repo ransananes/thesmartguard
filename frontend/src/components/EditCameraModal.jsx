@@ -1,20 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, ChevronDown, ChevronUp } from 'lucide-react';
-import { MOCK_STREAM_URL } from '../constants';
 
-const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
+const EditCameraModal = ({ isOpen, onClose, onSave, camera }) => {
     const [name, setName] = useState('');
-    const [ipAddress, setIpAddress] = useState('');
-    const [port, setPort] = useState('');
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState('');
+    const [streamUrl, setStreamUrl] = useState('');
+    const [location, setLocation] = useState('');
     const [robotHost, setRobotHost] = useState('');
     const [robotPort, setRobotPort] = useState('');
     const [showRobotSection, setShowRobotSection] = useState(false);
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
 
-    if (!isOpen) return null;
+    useEffect(() => {
+        if (camera) {
+            setName(camera.name || '');
+            setStreamUrl(camera.streamUrl || '');
+            setLocation(camera.location || '');
+            setRobotHost(camera.robotHost || '');
+            setRobotPort(camera.robotPort ? String(camera.robotPort) : '');
+            setShowRobotSection(!!(camera.robotHost));
+            setError('');
+        }
+    }, [camera]);
+
+    if (!isOpen || !camera) return null;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -22,26 +31,16 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
         setIsLoading(true);
 
         try {
-            await onAdd({
-                name,
-                ip_address: ipAddress,
-                port: port ? parseInt(port) : null,
-                username: username || null,
-                password: password || null,
+            await onSave(camera.id, {
+                name: name.trim(),
+                stream_url: streamUrl.trim(),
+                location: location.trim() || null,
                 robot_host: robotHost.trim() || null,
                 robot_port: robotPort ? parseInt(robotPort) : null,
             });
-
-            setName('');
-            setIpAddress('');
-            setPort('');
-            setUsername('');
-            setPassword('');
-            setRobotHost('');
-            setRobotPort('');
             onClose();
         } catch (err) {
-            setError(err.message || 'Failed to add camera');
+            setError(err.message || 'Failed to update camera');
         } finally {
             setIsLoading(false);
         }
@@ -51,7 +50,7 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div className="bg-neutral-900 border border-neutral-800 rounded-xl w-full max-w-md p-6 shadow-2xl">
                 <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-xl font-bold text-white">Add New Camera</h2>
+                    <h2 className="text-xl font-bold text-white">Edit Camera</h2>
                     <button onClick={onClose} className="text-neutral-400 hover:text-white transition-colors">
                         <X size={24} />
                     </button>
@@ -75,64 +74,28 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
                             placeholder="e.g. Front Door"
                         />
                     </div>
-                    
+
                     <div>
-                        <div className="flex justify-between items-center mb-1">
-                            <label className="block text-sm font-medium text-neutral-400">IP Address / Stream URL</label>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setName('Test Camera');
-                                    setIpAddress(MOCK_STREAM_URL);
-                                    setPort('');
-                                }}
-                                className="text-xs text-purple-400 hover:text-purple-300 underline"
-                            >
-                                Use Test Camera
-                            </button>
-                        </div>
+                        <label className="block text-sm font-medium text-neutral-400 mb-1">Stream URL</label>
                         <input
                             type="text"
-                            value={ipAddress}
-                            onChange={(e) => setIpAddress(e.target.value)}
+                            value={streamUrl}
+                            onChange={(e) => setStreamUrl(e.target.value)}
                             required
-                            className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all"
-                            placeholder="e.g. 192.168.1.100 or http://example.com/stream"
+                            className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all font-mono text-sm"
+                            placeholder="rtsp://... or http://..."
                         />
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-neutral-400 mb-1">Port (Optional)</label>
+                        <label className="block text-sm font-medium text-neutral-400 mb-1">Location (Optional)</label>
                         <input
-                            type="number"
-                            value={port}
-                            onChange={(e) => setPort(e.target.value)}
+                            type="text"
+                            value={location}
+                            onChange={(e) => setLocation(e.target.value)}
                             className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all"
-                            placeholder="e.g. 554"
+                            placeholder="e.g. Living Room"
                         />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-sm font-medium text-neutral-400 mb-1">Username (Optional)</label>
-                            <input
-                                type="text"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all"
-                                placeholder="admin"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-neutral-400 mb-1">Password (Optional)</label>
-                            <input
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent transition-all"
-                                placeholder="••••••"
-                            />
-                        </div>
                     </div>
 
                     {/* Robot Camera (optional) */}
@@ -186,7 +149,7 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
                             disabled={isLoading}
                             className="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 hover:bg-purple-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            {isLoading ? 'Adding...' : 'Add Camera'}
+                            {isLoading ? 'Saving...' : 'Save Changes'}
                         </button>
                     </div>
                 </form>
@@ -195,4 +158,4 @@ const AddCameraModal = ({ isOpen, onClose, onAdd }) => {
     );
 };
 
-export default AddCameraModal;
+export default EditCameraModal;

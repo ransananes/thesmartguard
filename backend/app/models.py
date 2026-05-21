@@ -57,6 +57,8 @@ class Camera(db.Model):
     port: int = db.Column(db.Integer, nullable=True)
     stream_url: str = db.Column(db.String(500), nullable=False)
     status: str = db.Column(db.String(20), default='online')
+    robot_host: str = db.Column(db.String(100), nullable=True)
+    robot_port: int = db.Column(db.Integer, nullable=True)
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +69,8 @@ class Camera(db.Model):
             'port': self.port,
             'streamUrl': self.stream_url,
             'status': self.status,
+            'robotHost': self.robot_host,
+            'robotPort': self.robot_port,
         }
 
 

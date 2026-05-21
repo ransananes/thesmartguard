@@ -84,6 +84,19 @@ def create_app() -> Flask:
     # the VP queries the DB during __init__ (face loading, settings).
     with app.app_context():
         db.create_all()   # idempotent — only creates tables that don't exist
+
+        # Add new nullable columns to existing DBs that predate this migration.
+        engine = db.engine
+        with engine.connect() as conn:
+            existing = {row[1] for row in conn.execute(db.text('PRAGMA table_info(camera)'))}
+            for col, ddl in [
+                ('robot_host', 'VARCHAR(100)'),
+                ('robot_port', 'INTEGER'),
+            ]:
+                if col not in existing:
+                    conn.execute(db.text(f'ALTER TABLE camera ADD COLUMN {col} {ddl}'))
+            conn.commit()
+
         from app.video_processor import VideoProcessor
         app.video_processor = VideoProcessor(app)
 

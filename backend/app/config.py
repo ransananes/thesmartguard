@@ -58,7 +58,7 @@ class Config:
     # Minimum person confidence required to trigger face detection pipeline
     PERSON_CONF_THRESHOLD: float = float(os.environ.get('PERSON_CONF_THRESHOLD', '0.55'))
     # Face-model confidence threshold
-    FACE_CONF_THRESHOLD: float = float(os.environ.get('FACE_CONF_THRESHOLD', '0.5'))
+    FACE_CONF_THRESHOLD: float = float(os.environ.get('FACE_CONF_THRESHOLD', '0.65'))
     # Face recognition distance tolerance (lower = stricter)
     FACE_TOLERANCE: float = float(os.environ.get('FACE_TOLERANCE', '0.55'))
     # JPEG quality used when encoding frames for the live stream (1-100)
@@ -71,6 +71,10 @@ class Config:
     DETECTION_QUEUE_SIZE: int = int(os.environ.get('DETECTION_QUEUE_SIZE', '100'))
     # Worker threads for face encoding executor
     FACE_EXECUTOR_WORKERS: int = int(os.environ.get('FACE_EXECUTOR_WORKERS', '1'))
+    # Run full YOLO tracking every N frames; raw frame is passed through on skipped frames
+    YOLO_PROCESS_EVERY_N_FRAMES: int = int(os.environ.get('YOLO_PROCESS_EVERY_N_FRAMES', '2'))
+    # Target FPS for the MJPEG video_feed stream sent to the browser
+    STREAM_TARGET_FPS: int = int(os.environ.get('STREAM_TARGET_FPS', '25'))
 
     # ------------------------------------------------------------------ #
     # Robot (ESP32-CAM WiFi TCP)
@@ -81,6 +85,8 @@ class Config:
     ROBOT_COMMAND_INTERVAL: float = float(
         os.environ.get('ROBOT_COMMAND_INTERVAL', '0.2')
     )
+    # Port the ESP32-CAM camera HTTP server listens on (default 81)
+    ROBOT_CAMERA_PORT: int = int(os.environ.get('ROBOT_CAMERA_PORT', '81'))
 
     # ------------------------------------------------------------------ #
     # Logging

@@ -1,7 +1,9 @@
-from flask import Blueprint, jsonify, request
+import os
+from flask import Blueprint, jsonify, request, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.models import Detection, Camera, User, NotificationSetting
 from app.extensions import db
+from app.config import Config
 
 monitor_bp = Blueprint('monitor', __name__, url_prefix='/api')
 
@@ -75,9 +77,12 @@ def get_history():
     page = request.args.get('page', 1, type=int)
     per_page = min(request.args.get('per_page', 50, type=int), 200)
 
-    enabled_labels = _get_enabled_labels(
-        user, ['person', 'Face: Unknown', 'Face: Known', 'car']
-    )
+    enabled_labels = [
+        l for l in _get_enabled_labels(
+            user, ['person', 'Face: Unknown', 'car']
+        )
+        if l != 'Face: Known'
+    ]
 
     pagination = (
         Detection.query
@@ -94,3 +99,35 @@ def get_history():
         'per_page': per_page,
         'pages': pagination.pages,
     })
+
+
+@monitor_bp.route('/detections/clear', methods=['POST'])
+@jwt_required()
+def clear_detections():
+    """Delete all detection records and their on-disk images. Known faces are untouched."""
+    try:
+        detections = Detection.query.all()
+        deleted_files = 0
+        for det in detections:
+            if det.image_path:
+                fpath = os.path.join(Config.STORAGE_ROOT, 'detections', det.image_path)
+                try:
+                    if os.path.exists(fpath):
+                        os.remove(fpath)
+                        deleted_files += 1
+                except OSError:
+                    pass
+
+        count = Detection.query.delete()
+        db.session.commit()
+
+        # Reset in-memory alert cooldown so fresh detections fire immediately
+        vp = getattr(current_app, 'video_processor', None)
+        if vp:
+            vp._last_detection_alert.clear()
+            vp.track_names.clear()
+
+        return jsonify({'success': True, 'deleted_records': count, 'deleted_files': deleted_files})
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(exc)}), 500

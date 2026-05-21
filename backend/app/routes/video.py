@@ -2,6 +2,7 @@ from flask import Blueprint, Response, stream_with_context, current_app, jsonify
 import time
 from app.models import Camera, Detection
 from app.extensions import db
+from app.config import Config
 
 video_bp = Blueprint('video', __name__, url_prefix='/api')
 
@@ -19,15 +20,17 @@ def video_feed(camera_id):
                 return
             vp.start_processing(camera.id, camera.stream_url, camera.name)
 
+        interval = 1.0 / Config.STREAM_TARGET_FPS
         while True:
+            t0 = time.time()
             frame = vp.get_frame()
             if frame:
                 yield (
                     b'--frame\r\n'
                     b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
                 )
-            else:
-                time.sleep(0.05)
+            sleep_t = interval - (time.time() - t0)
+            time.sleep(max(0.005, sleep_t))
 
     return Response(
         stream_with_context(generate()),

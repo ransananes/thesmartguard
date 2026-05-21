@@ -95,9 +95,13 @@ class VideoProcessor:
 
         # ── Robot / auto-follow ──────────────────────────────────────────
         self.auto_follow: bool = False
-        self.follow_known_only: bool = False          # NEW: only chase known faces
+        self.follow_known_only: bool = False
+        self.follow_unknowns: bool = False  # auto-engage robot when unknown person confirmed
         self._last_robot_command_time: float = 0.0
-        self._current_follow_target: Optional[str] = None  # NEW: name being followed
+        self._current_follow_target: Optional[str] = None
+
+        # ── Frame counter for YOLO skip ──────────────────────────────────
+        self._process_frame_counter: int = 0
 
         # ── Bootstrap ────────────────────────────────────────────────────
         self._perform_face_reload()
@@ -261,7 +265,13 @@ class VideoProcessor:
     # ════════════════════════════════════════════════════════════════════
 
     def _capture_loop(self) -> None:
-        cap = cv2.VideoCapture(self.camera_url)
+        # Force TCP transport for RTSP streams — prevents UDP packet-loss stalls
+        # common on WiFi cameras (ICsee, Dahua, Hikvision, etc.)
+        if str(self.camera_url).lower().startswith('rtsp://'):
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp|timeout;10000000'
+            cap = cv2.VideoCapture(self.camera_url, cv2.CAP_FFMPEG)
+        else:
+            cap = cv2.VideoCapture(self.camera_url)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # always grab the freshest frame
         if not cap.isOpened():
             logger.error(f'Cannot open stream: {self.camera_url}')
@@ -329,6 +339,13 @@ class VideoProcessor:
                     break
 
                 frame = item
+
+                # ── YOLO frame-skip: pass raw frame to display on skipped frames ──
+                self._process_frame_counter += 1
+                if self._process_frame_counter % Config.YOLO_PROCESS_EVERY_N_FRAMES != 0:
+                    with self._frame_lock:
+                        self._last_frame = frame
+                    continue
 
                 if self._reload_faces_needed:
                     self._perform_face_reload()
@@ -408,20 +425,21 @@ class VideoProcessor:
                             )
 
                             # ── Build follow candidate ───────────────────
-                            if self.auto_follow and track_id is not None:
+                            if (self.auto_follow or self.follow_unknowns) and track_id is not None:
                                 area = (x2 - x1) * (y2 - y1)
                                 name = self.track_names.get(track_id, {}).get('name', 'Unknown')
 
                                 if name not in ('Unknown', 'Checking...'):
-                                    # Known face — highest priority
+                                    # Confirmed known face — highest priority
                                     if area > max_known_area:
                                         max_known_area = area
                                         known_target   = (x1, y1, x2, y2, name)
-                                else:
-                                    # Unknown person — fallback
+                                elif name == 'Unknown':
+                                    # Confirmed unknown (identification finished, not in DB)
                                     if area > max_unknown_area:
                                         max_unknown_area = area
                                         unknown_target   = (x1, y1, x2, y2, name)
+                                # 'Checking...' — skip until identification resolves
 
                         else:
                             label_lower = label.lower()
@@ -441,21 +459,27 @@ class VideoProcessor:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
                 )
 
-                # ── Auto-follow decision ─────────────────────────────────
-                if self.auto_follow:
-                    # Decide which target to chase
-                    if self.follow_known_only:
-                        # Only recognised faces — ignore strangers
-                        follow_target = known_target
-                    else:
-                        # Known face takes priority; fall back to any person
-                        follow_target = known_target or unknown_target
+                # ── Auto-follow / follow-unknowns decision ───────────────
+                in_follow_mode = self.auto_follow or self.follow_unknowns
+
+                if in_follow_mode:
+                    follow_target = None
+
+                    if self.auto_follow:
+                        follow_target = (
+                            known_target
+                            if self.follow_known_only
+                            else (known_target or unknown_target)
+                        )
+
+                    # follow_unknowns fills in when auto_follow left nothing
+                    if follow_target is None and self.follow_unknowns:
+                        follow_target = unknown_target
 
                     if follow_target:
                         fx1, fy1, fx2, fy2, follow_name = follow_target
                         self._current_follow_target = follow_name
 
-                        # Draw a distinct cyan box around the chosen target
                         cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), (255, 255, 0), 3)
                         cv2.putText(
                             annotated,
@@ -467,14 +491,18 @@ class VideoProcessor:
 
                     else:
                         self._current_follow_target = None
-                        # No target visible — stop the robot
                         if current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
                             robot_controller.send_command('S')
                             self._last_robot_command_time = current_time
 
                 # ── Follow mode HUD ──────────────────────────────────────
-                if self.auto_follow:
-                    mode_label = 'Known only' if self.follow_known_only else 'All persons'
+                if in_follow_mode:
+                    if self.follow_unknowns and not self.auto_follow:
+                        mode_label = 'Unknowns auto'
+                    elif self.follow_unknowns:
+                        mode_label = ('Known only' if self.follow_known_only else 'All') + ' + unknowns auto'
+                    else:
+                        mode_label = 'Known only' if self.follow_known_only else 'All persons'
                     cv2.putText(
                         annotated,
                         f'Follow mode: {mode_label}',
@@ -600,6 +628,15 @@ class VideoProcessor:
                 continue
             best = int(result.boxes.conf.argmax())
             fx1, fy1, fx2, fy2 = map(int, result.boxes.xyxy[best].tolist())
+
+            # Geometric sanity check — hands/fists fail these
+            face_w, face_h = fx2 - fx1, fy2 - fy1
+            if face_w < 20 or face_h < 20:
+                continue
+            aspect = face_w / face_h if face_h > 0 else 0
+            if not (0.5 <= aspect <= 1.8):
+                continue
+
             # face_recognition expects (top, right, bottom, left) order
             face_loc_for_enc = [(fy1, fx2, fy2, fx1)]
             ch, cw = person_crop.shape[:2]
@@ -613,9 +650,14 @@ class VideoProcessor:
         if face_loc_for_enc is None:
             return 'Unknown', None, None
 
-        # Stage 2: Encode the face (no dlib face-location step needed)
+        # Stage 2: dlib confirms a face exists in this crop before we encode.
+        # This catches YOLO false-positives (e.g. hands) — if dlib also sees
+        # nothing here, discard the YOLO hit.
         rgb_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
         with self._face_recognition_lock:
+            dlib_locs = face_recognition.face_locations(rgb_crop, number_of_times_to_upsample=1)
+            if not dlib_locs:
+                return 'Unknown', None, None
             encs = face_recognition.face_encodings(rgb_crop, face_loc_for_enc)
 
         if not encs:
@@ -679,19 +721,26 @@ class VideoProcessor:
         self._last_robot_command_time = current_time
 
     def set_auto_follow(self, enabled: bool, known_only: bool = False) -> None:
-        self.auto_follow        = enabled
-        self.follow_known_only  = known_only
+        self.auto_follow       = enabled
+        self.follow_known_only = known_only
         self._current_follow_target = None
         logger.info(f'Auto-follow: {enabled}, known_only: {known_only}')
-        if not enabled:
+        if not enabled and not self.follow_unknowns:
+            robot_controller.send_command('S', force=True)
+
+    def set_follow_unknowns(self, enabled: bool) -> None:
+        self.follow_unknowns = enabled
+        self._current_follow_target = None
+        logger.info(f'Follow-unknowns: {enabled}')
+        if not enabled and not self.auto_follow:
             robot_controller.send_command('S', force=True)
 
     def get_follow_status(self) -> dict:
-        """Return current follow state for the /api/robot/status endpoint."""
         return {
-            'auto_follow':    self.auto_follow,
-            'known_only':     self.follow_known_only,
-            'follow_target':  self._current_follow_target,
+            'auto_follow':      self.auto_follow,
+            'known_only':       self.follow_known_only,
+            'follow_unknowns':  self.follow_unknowns,
+            'follow_target':    self._current_follow_target,
         }
 
     # ════════════════════════════════════════════════════════════════════
