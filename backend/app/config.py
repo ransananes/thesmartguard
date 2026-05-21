@@ -55,6 +55,8 @@ class Config:
     STALE_TRACK_TTL: float = float(os.environ.get('STALE_TRACK_TTL', '10.0'))
     # YOLO detection confidence threshold
     YOLO_CONF_THRESHOLD: float = float(os.environ.get('YOLO_CONF_THRESHOLD', '0.4'))
+    # Minimum person confidence required to trigger face detection pipeline
+    PERSON_CONF_THRESHOLD: float = float(os.environ.get('PERSON_CONF_THRESHOLD', '0.55'))
     # Face-model confidence threshold
     FACE_CONF_THRESHOLD: float = float(os.environ.get('FACE_CONF_THRESHOLD', '0.5'))
     # Face recognition distance tolerance (lower = stricter)
@@ -68,7 +70,7 @@ class Config:
     # Max detections to buffer before writing to DB
     DETECTION_QUEUE_SIZE: int = int(os.environ.get('DETECTION_QUEUE_SIZE', '100'))
     # Worker threads for face encoding executor
-    FACE_EXECUTOR_WORKERS: int = int(os.environ.get('FACE_EXECUTOR_WORKERS', '2'))
+    FACE_EXECUTOR_WORKERS: int = int(os.environ.get('FACE_EXECUTOR_WORKERS', '1'))
 
     # ------------------------------------------------------------------ #
     # Robot (ESP32-CAM WiFi TCP)

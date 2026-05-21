@@ -149,12 +149,21 @@ def add_face_from_detection():
 
     try:
         img = face_recognition.load_image_file(dest_path)
-        face_locs = _detect_face_locations(dest_path)
+        h, w = img.shape[:2]
 
+        # Try YOLO face model for precise location first
+        face_locs = _detect_face_locations(dest_path)
         if face_locs:
             encodings = face_recognition.face_encodings(img, face_locs)
         else:
+            # Try dlib HOG (needs context margin — may fail on tight crops)
             encodings = face_recognition.face_encodings(img)
+
+        # Detection images are already tight face crops saved by the pipeline.
+        # If both detectors fail (no context margin), encode treating the whole
+        # image as the face region — we know it contains a face.
+        if not encodings:
+            encodings = face_recognition.face_encodings(img, [(0, w, h, 0)])
 
         if not encodings:
             os.remove(dest_path)

@@ -77,6 +77,8 @@ class VideoProcessor:
         self.known_face_encodings: list = []
         self.known_face_names: list[str] = []
         self._faces_lock = threading.Lock()
+        # dlib (used by face_recognition) is not thread-safe; serialize all calls
+        self._face_recognition_lock = threading.Lock()
         self._reload_faces_needed = False
 
         # ── Detection settings ───────────────────────────────────────────
@@ -402,7 +404,7 @@ class VideoProcessor:
 
                             display_text, color = self._handle_person(
                                 frame, x1, y1, x2, y2,
-                                track_id, current_time, current_frame_names,
+                                conf, track_id, current_time, current_frame_names,
                             )
 
                             # ── Build follow candidate ───────────────────
@@ -496,6 +498,7 @@ class VideoProcessor:
         self,
         frame: np.ndarray,
         x1: int, y1: int, x2: int, y2: int,
+        conf: float,
         track_id: Optional[int],
         current_time: float,
         current_frame_names: list[str],
@@ -509,27 +512,34 @@ class VideoProcessor:
         info = self.track_names.get(track_id)
 
         if info is None:
-            future = self._face_executor.submit(
-                self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
-            )
+            if conf >= Config.PERSON_CONF_THRESHOLD:
+                future = self._face_executor.submit(
+                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
+                )
+                name = 'Checking...'
+            else:
+                future = None
+                name = 'Unknown'
             self.track_names[track_id] = {
-                'name':            'Checking...',
+                'name':            name,
                 'last_seen':       current_time,
                 'face_encoding':   None,
+                'face_image_path': None,
                 'last_face_check': current_time,
                 'future':          future,
             }
-            name = 'Checking...'
         else:
             info['last_seen'] = current_time
 
             future: Optional[Future] = info.get('future')
             if future is not None and future.done():
                 try:
-                    identified_name, enc = future.result()
+                    identified_name, enc, image_path = future.result()
                     info['name'] = identified_name
                     if enc is not None:
                         info['face_encoding'] = enc
+                    if image_path is not None:
+                        info['face_image_path'] = image_path
                 except Exception as exc:
                     logger.error(f'Face future error: {exc}')
                     info['name'] = 'Unknown'
@@ -541,6 +551,7 @@ class VideoProcessor:
             if (
                 name == 'Unknown'
                 and info.get('future') is None
+                and conf >= Config.PERSON_CONF_THRESHOLD
                 and current_time - info.get('last_face_check', 0) > Config.UNKNOWN_FACE_RECHECK_INTERVAL
             ):
                 info['future'] = self._face_executor.submit(
@@ -553,7 +564,7 @@ class VideoProcessor:
         if name not in ('Unknown', 'Checking...'):
             color = (0, 255, 0)   # green = known
 
-        self._queue_face_alert(name, track_id, frame, current_time, x1, y1, x2, y2)
+        self._queue_face_alert(name, track_id, current_time)
         return name, color
 
     # ════════════════════════════════════════════════════════════════════
@@ -562,42 +573,82 @@ class VideoProcessor:
 
     def _identify_face_in_box(
         self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int
-    ) -> tuple[str, Optional[np.ndarray]]:
+    ) -> tuple[str, Optional[np.ndarray], Optional[str]]:
+        """Two-stage pipeline: YOLO face detect → face_recognition encode → save crop.
+
+        Returns (name, encoding, saved_image_filename).
+        """
         h, w = frame.shape[:2]
-        crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
-        if crop.size == 0:
-            return 'Unknown', None
+        person_crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+        if person_crop.size == 0:
+            return 'Unknown', None, None
 
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-        locs = face_recognition.face_locations(rgb, number_of_times_to_upsample=1)
-        if not locs:
-            return 'Unknown', None
+        # Stage 1: YOLO face model locates the face inside the person crop
+        try:
+            face_results = self.face_model(
+                person_crop, verbose=False, conf=Config.FACE_CONF_THRESHOLD
+            )
+        except Exception as exc:
+            logger.error(f'Face model inference error: {exc}')
+            return 'Unknown', None, None
 
-        encs = face_recognition.face_encodings(rgb, locs)
+        face_loc_for_enc = None
+        face_crop = None
+
+        for result in face_results:
+            if result.boxes is None or len(result.boxes) == 0:
+                continue
+            best = int(result.boxes.conf.argmax())
+            fx1, fy1, fx2, fy2 = map(int, result.boxes.xyxy[best].tolist())
+            # face_recognition expects (top, right, bottom, left) order
+            face_loc_for_enc = [(fy1, fx2, fy2, fx1)]
+            ch, cw = person_crop.shape[:2]
+            pad = 10
+            face_crop = person_crop[
+                max(0, fy1 - pad):min(ch, fy2 + pad),
+                max(0, fx1 - pad):min(cw, fx2 + pad),
+            ]
+            break
+
+        if face_loc_for_enc is None:
+            return 'Unknown', None, None
+
+        # Stage 2: Encode the face (no dlib face-location step needed)
+        rgb_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
+        with self._face_recognition_lock:
+            encs = face_recognition.face_encodings(rgb_crop, face_loc_for_enc)
+
         if not encs:
-            return 'Unknown', None
+            return 'Unknown', None, None
 
         face_enc = encs[0]
 
+        # Stage 3: Match against known faces
         with self._faces_lock:
             known_encs  = list(self.known_face_encodings)
             known_names = list(self.known_face_names)
 
-        if not known_encs:
-            return 'Unknown', face_enc
-
-        distances = face_recognition.face_distance(known_encs, face_enc)
-        matches   = face_recognition.compare_faces(known_encs, face_enc, tolerance=Config.FACE_TOLERANCE)
-        best_idx  = int(np.argmin(distances))
-
-        if matches[best_idx]:
-            name = known_names[best_idx]
-            logger.info(f'Face match: {name} (dist={distances[best_idx]:.4f})')
+        if known_encs:
+            distances = face_recognition.face_distance(known_encs, face_enc)
+            matches   = face_recognition.compare_faces(known_encs, face_enc, tolerance=Config.FACE_TOLERANCE)
+            best_idx  = int(np.argmin(distances))
+            if matches[best_idx]:
+                name = known_names[best_idx]
+                logger.info(f'Face match: {name} (dist={distances[best_idx]:.4f})')
+            else:
+                name = 'Unknown'
+                logger.debug(f'No face match (best dist={distances[best_idx]:.4f})')
         else:
             name = 'Unknown'
-            logger.debug(f'No face match (best dist={distances[best_idx]:.4f})')
 
-        return name, face_enc
+        # Stage 4: Save the tight face crop
+        image_path = (
+            self._save_face_image(face_crop)
+            if face_crop is not None and face_crop.size > 0
+            else None
+        )
+
+        return name, face_enc, image_path
 
     # ════════════════════════════════════════════════════════════════════
     # Auto-follow
@@ -667,10 +718,16 @@ class VideoProcessor:
         self,
         name: str,
         track_id: int,
-        frame: np.ndarray,
         current_time: float,
-        x1: int, y1: int, x2: int, y2: int,
     ) -> None:
+        # Wait until identification is complete and a face image was captured
+        if name == 'Checking...':
+            return
+
+        image_path = self.track_names.get(track_id, {}).get('face_image_path')
+        if image_path is None:
+            return
+
         alert_category = 'face: unknown' if name == 'Unknown' else 'face: known'
 
         with self._settings_lock:
@@ -685,10 +742,6 @@ class VideoProcessor:
 
         logger.info(f'[FACE ALERT] {name} (track={track_id})')
 
-        image_path = self._save_face_crop(name, frame, x1, y1, x2, y2)
-        if image_path is None:
-            return
-
         det = Detection(
             camera_id=self.camera_id,
             label=f'Face: {name}',
@@ -698,38 +751,15 @@ class VideoProcessor:
         )
         self._enqueue_detection(det)
 
-    def _save_face_crop(
-        self, name: str, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int
-    ) -> Optional[str]:
-        h, w = frame.shape[:2]
-        crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
-        if crop.size == 0:
-            return None
-
-        rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-        face_locs = face_recognition.face_locations(rgb_crop, number_of_times_to_upsample=1)
-        if not face_locs:
-            logger.debug(f'No face found in crop for {name} — skipping save')
-            return None
-
-        top, right, bottom, left = face_locs[0]
-        pad  = 20
-        f_h, f_w = crop.shape[:2]
-        tight = crop[
-            max(0, top - pad):min(f_h, bottom + pad),
-            max(0, left - pad):min(f_w, right + pad),
-        ]
-
-        filename    = f'face_{uuid.uuid4()}.jpg'
-        storage_root = Config.STORAGE_ROOT
-        filepath    = os.path.join(storage_root, 'detections', filename)
-
+    def _save_face_image(self, img: np.ndarray) -> Optional[str]:
+        filename = f'face_{uuid.uuid4()}.jpg'
+        filepath = os.path.join(Config.STORAGE_ROOT, 'detections', filename)
         try:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            cv2.imwrite(filepath, tight)
+            cv2.imwrite(filepath, img)
             return filename
         except Exception as exc:
-            logger.error(f'Error saving face crop: {exc}')
+            logger.error(f'Error saving face image: {exc}')
             return None
 
     def _enqueue_detection(self, detection: Detection) -> None:
