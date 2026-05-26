@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import toast from 'react-hot-toast';
 import VideoPlayer from '../components/VideoPlayer';
 import VideoLoading from '../components/VideoLoading';
 import Header from '../components/Header';
@@ -179,6 +180,41 @@ const StatusMonitor = () => {
         };
         fetchRobotStatus();
         const id = setInterval(fetchRobotStatus, 10000);
+        return () => clearInterval(id);
+    }, []);
+
+    // Unknown-person notification: poll live_status every 5 s and fire a
+    // browser notification + toast when a new persistent-unknown alert arrives.
+    const lastAlertCountRef = useRef(null);
+    useEffect(() => {
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+
+        const checkAlerts = async () => {
+            try {
+                const data = await api.fetchLiveStatus();
+                const count = data.unknown_alert_count ?? 0;
+
+                if (lastAlertCountRef.current !== null && count > lastAlertCountRef.current) {
+                    toast.error('Unknown person detected for over 5 seconds!', {
+                        duration: 8000,
+                        icon: '⚠️',
+                    });
+                    if ('Notification' in window && Notification.permission === 'granted') {
+                        new Notification('SmartGuard Security Alert', {
+                            body: 'An unidentified person has been present for over 5 seconds.',
+                            icon: '/favicon.ico',
+                        });
+                    }
+                }
+
+                lastAlertCountRef.current = count;
+            } catch (_) {}
+        };
+
+        checkAlerts();
+        const id = setInterval(checkAlerts, 5000);
         return () => clearInterval(id);
     }, []);
 

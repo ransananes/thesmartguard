@@ -42,13 +42,17 @@ def video_feed(camera_id):
 def live_status():
     vp = getattr(current_app, 'video_processor', None)
     if vp is None:
-        return jsonify({'person_count': 0, 'faces': []})
+        return jsonify({'person_count': 0, 'faces': [], 'unknown_alert_count': 0})
 
     with vp._frame_lock:
         faces = list(vp.current_faces)
         person_count = vp.current_person_count
 
-    return jsonify({'person_count': person_count, 'faces': faces})
+    return jsonify({
+        'person_count': person_count,
+        'faces': faces,
+        'unknown_alert_count': vp._unknown_alert_count,
+    })
 
 
 @video_bp.route('/detections', methods=['GET'])

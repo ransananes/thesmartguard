@@ -11,7 +11,9 @@ import {
     Link2Off,
     Keyboard,
     Eye,
-    EyeOff
+    EyeOff,
+    Home,
+    RotateCcw
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
@@ -22,6 +24,8 @@ const RobotControl = ({ isActive = false }) => {
     const [activeCommand, setActiveCommand] = useState(null);
     const [autoFollow, setAutoFollow] = useState(false);
     const [followUnknowns, setFollowUnknowns] = useState(false);
+    const [homing, setHoming] = useState(false);
+    const [scanActive, setScanActive] = useState(false);
 
     const fetchStatus = useCallback(async () => {
         try {
@@ -30,6 +34,8 @@ const RobotControl = ({ isActive = false }) => {
                 setStatus(res.status);
                 if (res.status.auto_follow !== undefined) setAutoFollow(res.status.auto_follow);
                 if (res.status.follow_unknowns !== undefined) setFollowUnknowns(res.status.follow_unknowns);
+                if (res.status.homing !== undefined) setHoming(res.status.homing);
+                if (res.status.scan_active !== undefined) setScanActive(res.status.scan_active);
             }
         } catch (error) {
             console.error("Failed to fetch robot status", error);
@@ -39,6 +45,13 @@ const RobotControl = ({ isActive = false }) => {
     useEffect(() => {
         fetchStatus();
     }, [fetchStatus]);
+
+    // Poll while the robot is actively homing or scanning so the button resets automatically
+    useEffect(() => {
+        if (!homing && !scanActive) return;
+        const interval = setInterval(fetchStatus, 1000);
+        return () => clearInterval(interval);
+    }, [homing, scanActive, fetchStatus]);
 
     const sendCommand = async (command) => {
         setActiveCommand(command);
@@ -115,6 +128,33 @@ const RobotControl = ({ isActive = false }) => {
             }
         } catch (error) {
             toast.error("Failed to toggle follow-unknowns");
+        }
+    };
+
+    const handleRegisterHome = async () => {
+        try {
+            const res = await api.robot.registerHome();
+            if (res.success) {
+                toast.success('Home position saved — robot will return here on detection');
+            } else {
+                toast.error(res.message || 'Failed to register home');
+            }
+        } catch (error) {
+            toast.error('Failed to register home position');
+        }
+    };
+
+    const handleReturnHome = async () => {
+        try {
+            const res = await api.robot.returnHome();
+            if (res.success) {
+                toast.success('Returning to home position');
+                fetchStatus();
+            } else {
+                toast.error(res.message || 'Failed to return home');
+            }
+        } catch (error) {
+            toast.error('Failed to send return home command');
         }
     };
 
@@ -304,6 +344,71 @@ const RobotControl = ({ isActive = false }) => {
                         <p className="text-[11px] text-neutral-500">Use WASD or Arrows to move. Space to stop.</p>
                     </div>
                 </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                    <motion.button
+                        whileTap={{ scale: 0.97 }}
+                        onClick={handleReturnHome}
+                        disabled={!status.connected || homing}
+                        className={`
+                            p-4 rounded-xl flex items-center gap-3 transition-all border
+                            ${!status.connected || homing
+                                ? 'bg-neutral-800/30 border-white/5 text-neutral-600 cursor-not-allowed'
+                                : 'bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20'
+                            }
+                        `}
+                    >
+                        <RotateCcw size={20} className={homing ? 'animate-spin' : ''} />
+                        <div className="text-left">
+                            <h4 className="text-sm font-bold">Return Home</h4>
+                            <p className="text-[10px] opacity-70">
+                                {homing ? 'Returning…' : 'Go back to home position'}
+                            </p>
+                        </div>
+                    </motion.button>
+
+                    <motion.button
+                        whileTap={{ scale: 0.97 }}
+                        onClick={handleRegisterHome}
+                        disabled={!status.connected}
+                        className={`
+                            p-4 rounded-xl flex items-center gap-3 transition-all border
+                            ${!status.connected
+                                ? 'bg-neutral-800/30 border-white/5 text-neutral-600 cursor-not-allowed'
+                                : 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'
+                            }
+                        `}
+                    >
+                        <Home size={20} />
+                        <div className="text-left">
+                            <h4 className="text-sm font-bold">Set Home</h4>
+                            <p className="text-[10px] opacity-70">Save current spot as home</p>
+                        </div>
+                    </motion.button>
+                </div>
+
+                {(homing || scanActive) && (
+                    <div className={`
+                        p-4 rounded-xl flex items-center gap-3 border
+                        ${homing
+                            ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                            : 'bg-orange-500/10 border-orange-500/30 text-orange-400'
+                        }
+                    `}>
+                        <RotateCcw size={20} className="animate-spin" />
+                        <div>
+                            <h4 className="text-sm font-bold">
+                                {homing ? 'Returning to Home…' : 'Scanning for Target…'}
+                            </h4>
+                            <p className="text-[10px] opacity-70">
+                                {homing
+                                    ? 'Robot is navigating back to camera install position'
+                                    : 'Robot arrived home and is rotating to locate the target'
+                                }
+                            </p>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -87,6 +87,19 @@ class Config:
     )
     # Port the ESP32-CAM camera HTTP server listens on (default 81)
     ROBOT_CAMERA_PORT: int = int(os.environ.get('ROBOT_CAMERA_PORT', '81'))
+    # Seconds the robot will rotate scanning for a target after returning home
+    INTERCEPT_SCAN_TIMEOUT: float = float(os.environ.get('INTERCEPT_SCAN_TIMEOUT', '30.0'))
+    # Seconds the main camera must fail to identify a person before the robot engages
+    ROBOT_ENGAGE_DELAY: float = float(os.environ.get('ROBOT_ENGAGE_DELAY', '2.5'))
+    # Seconds a confirmed Unknown person must persist before a notification is sent
+    UNKNOWN_NOTIFY_DELAY: float = float(os.environ.get('UNKNOWN_NOTIFY_DELAY', '5.0'))
+    # Minimum move duration (ms) worth logging for dead-reckoning
+    MOVE_LOG_MIN_MS: int = int(os.environ.get('MOVE_LOG_MIN_MS', '50'))
+    # Duration (ms) of the 180° spin at the start of return-to-home
+    # Calibrate on your robot: increase if it undershoots, decrease if it overshoots
+    SPIN_180_MS: int = int(os.environ.get('SPIN_180_MS', '1600'))
+    # Duration (ms) the robot steers to clear one obstacle during return
+    OBSTACLE_AVOID_STEER_MS: int = int(os.environ.get('OBSTACLE_AVOID_STEER_MS', '400'))
 
     # ------------------------------------------------------------------ #
     # Logging

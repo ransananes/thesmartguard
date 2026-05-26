@@ -43,13 +43,16 @@ SoftwareSerial espSerial(ESP_RX_PIN, ESP_TX_PIN);
 // Forward uses two separate values so you can trim out a drift:
 //   Robot turns RIGHT → reduce SPEED_FWD_A  (or raise SPEED_FWD_B)
 //   Robot turns LEFT  → reduce SPEED_FWD_B  (or raise SPEED_FWD_A)
-#define SPEED_FWD_A   180   // Motor A (PWM1 / ENA) during forward
-#define SPEED_FWD_B   200   // Motor B (PWM2 / ENB) during forward — raised to correct right drift
-#define SPEED_BACK    160
-#define SPEED_TURN    130
+#define SPEED_FWD_A        180   // Motor A (PWM1 / ENA) during forward
+#define SPEED_FWD_B        200   // Motor B (PWM2 / ENB) during forward — raised to correct right drift
+#define SPEED_BACK         160
+#define SPEED_TURN         130
+// Fast return-to-home speeds (lowercase commands: f b l r)
+#define SPEED_RETURN_BWD   220
+#define SPEED_RETURN_TURN  185
 
 // ── Auto-stop timeout (milliseconds) ───────────────────────────────────
-#define AUTO_STOP_TIMEOUT 300  // Stop after 300ms of no new commands
+#define AUTO_STOP_TIMEOUT 600  // Stop after 600ms of no new commands
 
 
 // ── Low-level helpers ──────────────────────────────────────────────────
@@ -95,24 +98,41 @@ void executeCommand(char cmd) {
 
   switch (cmd) {
     case 'F':
-      motor(DIR_FORWARD,  SPEED_FWD_A, SPEED_FWD_B);
+      motor(DIR_FORWARD,  SPEED_FWD_A,       SPEED_FWD_B);
       Serial.println(">> Forward");
       break;
     case 'B':
-      motor(DIR_BACKWARD, SPEED_BACK,   SPEED_BACK);
+      motor(DIR_BACKWARD, SPEED_BACK,        SPEED_BACK);
       Serial.println(">> Backward");
       break;
     case 'L':
-      motor(DIR_LEFT,     SPEED_TURN,   SPEED_TURN);
+      motor(DIR_LEFT,     SPEED_TURN,        SPEED_TURN);
       Serial.println(">> Left");
       break;
     case 'R':
-      motor(DIR_RIGHT,    SPEED_TURN,   SPEED_TURN);
+      motor(DIR_RIGHT,    SPEED_TURN,        SPEED_TURN);
       Serial.println(">> Right");
       break;
     case 'S':
       motor(DIR_STOP, 0, 0);
       Serial.println(">> Stop");
+      break;
+    // Fast return-to-home commands (lowercase) — higher PWM, duration-adjusted by backend
+    case 'f':
+      motor(DIR_FORWARD,  SPEED_RETURN_BWD,  SPEED_RETURN_BWD);
+      Serial.println(">> Fast Forward (return)");
+      break;
+    case 'b':
+      motor(DIR_BACKWARD, SPEED_RETURN_BWD,  SPEED_RETURN_BWD);
+      Serial.println(">> Fast Backward (return)");
+      break;
+    case 'l':
+      motor(DIR_LEFT,     SPEED_RETURN_TURN, SPEED_RETURN_TURN);
+      Serial.println(">> Fast Left (return)");
+      break;
+    case 'r':
+      motor(DIR_RIGHT,    SPEED_RETURN_TURN, SPEED_RETURN_TURN);
+      Serial.println(">> Fast Right (return)");
       break;
     default:
       break;
@@ -174,11 +194,9 @@ void setup() {
 
 
 void loop() {
-  // ── Commands from ESP32 ────────────────────────────────────────────
   if (espSerial.available()) {
     String line = espSerial.readStringUntil('\n');
     line.trim();
-    line.toUpperCase();
     if (line.length() > 0) {
       Serial.print("[ESP32] ");
       Serial.println(line);
@@ -186,11 +204,9 @@ void loop() {
     }
   }
 
-  // ── Manual commands from USB Serial Monitor ────────────────────────
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
-    line.toUpperCase();
     if (line.length() > 0) {
       Serial.print("[USB] ");
       Serial.println(line);
@@ -198,6 +214,6 @@ void loop() {
     }
   }
 
-  // ── Auto-stop safety feature ───────────────────────────────────────
+
   checkAutoStop();
 }

@@ -100,8 +100,36 @@ class VideoProcessor:
         self._last_robot_command_time: float = 0.0
         self._current_follow_target: Optional[str] = None
 
+        # ── Intercept: detection-triggered home-return + scan ────────────
+        self._homing: bool = False                       # robot is autonomously returning home
+        self._scan_active: bool = False                  # robot arrived home, scanning for target
+        self._scan_start_time: float = 0.0
+        self._priority_track_id: Optional[int] = None
+        self._pre_intercept_follow_unknowns: bool = False
+
         # ── Frame counter for YOLO skip ──────────────────────────────────
         self._process_frame_counter: int = 0
+
+        # ── Unknown-person notification counter ──────────────────────────
+        # Incremented each time a track stays Unknown for >= UNKNOWN_NOTIFY_DELAY.
+        # The frontend polls live_status and shows a notification when the value rises.
+        self._unknown_alert_count: int = 0
+
+        # ── Robot camera ─────────────────────────────────────────────────
+        # Separate YOLO instance so its bytetrack state never collides with
+        # the main camera's tracker (each instance owns its own predictor/tracker).
+        self._robot_model = YOLO('yolov8n.pt')
+        self._robot_model.to(self.device)
+
+        self._robot_frame_lock = threading.Lock()
+        self._robot_last_frame: Optional[np.ndarray] = None
+        self._robot_frame_queue: queue.Queue = queue.Queue(maxsize=Config.FRAME_QUEUE_SIZE)
+        self._robot_capture_thread: Optional[threading.Thread] = None
+        self._robot_process_thread: Optional[threading.Thread] = None
+        self._robot_processing: bool = False
+        self._robot_cam_url: Optional[str] = None
+        self._robot_track_names: dict[int, dict] = {}
+        self._robot_process_frame_counter: int = 0
 
         # ── Bootstrap ────────────────────────────────────────────────────
         self._perform_face_reload()
@@ -462,7 +490,12 @@ class VideoProcessor:
                 # ── Auto-follow / follow-unknowns decision ───────────────
                 in_follow_mode = self.auto_follow or self.follow_unknowns
 
-                if in_follow_mode:
+                if self._homing:
+                    # Robot is autonomously returning to camera home position —
+                    # suppress all follow commands to avoid interrupting the sequence.
+                    self._current_follow_target = None
+
+                elif in_follow_mode:
                     follow_target = None
 
                     if self.auto_follow:
@@ -480,6 +513,10 @@ class VideoProcessor:
                         fx1, fy1, fx2, fy2, follow_name = follow_target
                         self._current_follow_target = follow_name
 
+                        if self._scan_active:
+                            self._scan_active = False
+                            robot_controller.resume_movement_logging()  # resume path logging now that we're following
+
                         cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), (255, 255, 0), 3)
                         cv2.putText(
                             annotated,
@@ -491,9 +528,18 @@ class VideoProcessor:
 
                     else:
                         self._current_follow_target = None
-                        if current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
-                            robot_controller.send_command('S')
-                            self._last_robot_command_time = current_time
+
+                        if self._scan_active:
+                            # Rotate slowly to search for the target
+                            if current_time - self._scan_start_time > Config.INTERCEPT_SCAN_TIMEOUT:
+                                self._end_intercept()
+                            elif current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
+                                robot_controller.send_command('L', force=True)
+                                self._last_robot_command_time = current_time
+                        else:
+                            if current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
+                                robot_controller.send_command('S', force=True)
+                                self._last_robot_command_time = current_time
 
                 # ── Follow mode HUD ──────────────────────────────────────
                 if in_follow_mode:
@@ -555,6 +601,11 @@ class VideoProcessor:
                 'face_image_path': None,
                 'last_face_check': current_time,
                 'future':          future,
+                'first_seen':      current_time,
+                'robot_engaged':   False,
+                # unknown_since: set when name first resolves to 'Unknown'
+                'unknown_since':   current_time if name == 'Unknown' else None,
+                'notified':        False,
             }
         else:
             info['last_seen'] = current_time
@@ -573,6 +624,9 @@ class VideoProcessor:
                     info['name'] = 'Unknown'
                 info['future']          = None
                 info['last_face_check'] = current_time
+                # Start the notification timer the moment identification confirms Unknown
+                if info['name'] == 'Unknown' and info.get('unknown_since') is None:
+                    info['unknown_since'] = current_time
 
             name = info['name']
 
@@ -593,6 +647,36 @@ class VideoProcessor:
             color = (0, 255, 0)   # green = known
 
         self._queue_face_alert(name, track_id, current_time)
+
+        # Persistent-unknown notification: fire once per track after UNKNOWN_NOTIFY_DELAY
+        track_info = self.track_names[track_id]
+        if (
+            name == 'Unknown'
+            and not track_info.get('notified', False)
+            and track_info.get('unknown_since') is not None
+            and current_time - track_info['unknown_since'] >= Config.UNKNOWN_NOTIFY_DELAY
+        ):
+            track_info['notified'] = True
+            self._unknown_alert_count += 1
+            logger.info(
+                f'Unknown-person notification fired for track {track_id} '
+                f'({current_time - track_info["unknown_since"]:.1f}s unidentified)'
+            )
+
+        # Engage the robot only after the camera has failed to confirm the person
+        # within ROBOT_ENGAGE_DELAY seconds (covers both a slow pipeline and a
+        # completed identification that returned 'Unknown').
+        if (
+            self.follow_unknowns
+            and not self._homing
+            and not self._scan_active
+            and name in ('Unknown', 'Checking...')
+            and not track_info.get('robot_engaged', False)
+            and current_time - track_info.get('first_seen', current_time) >= Config.ROBOT_ENGAGE_DELAY
+        ):
+            track_info['robot_engaged'] = True
+            self._trigger_intercept(track_id)
+
         return name, color
 
     # ════════════════════════════════════════════════════════════════════
@@ -717,7 +801,7 @@ class VideoProcessor:
             person_height_pct = (y2 - y1) / frame_height
             command = 'F' if person_height_pct < 0.6 else 'S'
 
-        robot_controller.send_command(command)
+        robot_controller.send_command(command, force=True)
         self._last_robot_command_time = current_time
 
     def set_auto_follow(self, enabled: bool, known_only: bool = False) -> None:
@@ -732,8 +816,13 @@ class VideoProcessor:
         self.follow_unknowns = enabled
         self._current_follow_target = None
         logger.info(f'Follow-unknowns: {enabled}')
-        if not enabled and not self.auto_follow:
-            robot_controller.send_command('S', force=True)
+        if not enabled:
+            if self._homing or self._scan_active:
+                self._homing = False
+                self._scan_active = False
+                self._priority_track_id = None
+            if not self.auto_follow:
+                robot_controller.send_command('S', force=True)
 
     def get_follow_status(self) -> dict:
         return {
@@ -741,7 +830,316 @@ class VideoProcessor:
             'known_only':       self.follow_known_only,
             'follow_unknowns':  self.follow_unknowns,
             'follow_target':    self._current_follow_target,
+            'homing':           self._homing,
+            'scan_active':      self._scan_active,
         }
+
+    # ════════════════════════════════════════════════════════════════════
+    # Robot camera processing (face confirmation on robot stream)
+    # ════════════════════════════════════════════════════════════════════
+
+    def start_robot_camera_processing(self, cam_url: str) -> None:
+        if self._robot_processing:
+            self.stop_robot_camera_processing()
+
+        self._robot_cam_url = cam_url
+        self._robot_track_names.clear()
+
+        with self._robot_frame_lock:
+            self._robot_last_frame = None
+
+        self._robot_processing = True
+
+        self._robot_capture_thread = threading.Thread(
+            target=self._robot_capture_loop, name='robot-capture', daemon=True
+        )
+        self._robot_process_thread = threading.Thread(
+            target=self._robot_processing_loop, name='robot-process', daemon=True
+        )
+        self._robot_capture_thread.start()
+        self._robot_process_thread.start()
+        logger.info(f'Robot camera processing started: {cam_url}')
+
+    def stop_robot_camera_processing(self) -> None:
+        self._robot_processing = False
+        try:
+            self._robot_frame_queue.put_nowait(_STOP)
+        except queue.Full:
+            pass
+
+        for thread in (self._robot_capture_thread, self._robot_process_thread):
+            if thread and thread.is_alive():
+                thread.join(timeout=5)
+
+        self._robot_capture_thread = None
+        self._robot_process_thread = None
+
+        with self._robot_frame_lock:
+            self._robot_last_frame = None
+
+        logger.info('Robot camera processing stopped.')
+
+    def get_robot_frame(self) -> Optional[bytes]:
+        with self._robot_frame_lock:
+            if self._robot_last_frame is None:
+                return None
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, Config.STREAM_JPEG_QUALITY]
+        with self._robot_frame_lock:
+            ret, buffer = cv2.imencode('.jpg', self._robot_last_frame, encode_params)
+        return buffer.tobytes() if ret else None
+
+    def _robot_capture_loop(self) -> None:
+        cap = cv2.VideoCapture(self._robot_cam_url)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if not cap.isOpened():
+            logger.error(f'Cannot open robot camera stream: {self._robot_cam_url}')
+            self._robot_processing = False
+            return
+
+        logger.info('Robot camera capture thread started')
+        consecutive_failures = 0
+
+        while self._robot_processing:
+            ret, frame = cap.read()
+            if not ret:
+                consecutive_failures += 1
+                if consecutive_failures > 30:
+                    logger.warning('Robot camera: too many read failures — stopping')
+                    self._robot_processing = False
+                    break
+                time.sleep(0.05)
+                continue
+            consecutive_failures = 0
+
+            try:
+                self._robot_frame_queue.put_nowait(frame)
+            except queue.Full:
+                try:
+                    self._robot_frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._robot_frame_queue.put_nowait(frame)
+                except queue.Full:
+                    pass
+
+        cap.release()
+        logger.info('Robot camera capture thread exited.')
+
+    def _robot_processing_loop(self) -> None:
+        while self._robot_processing:
+            try:
+                item = self._robot_frame_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if item is _STOP:
+                break
+
+            frame = item
+
+            self._robot_process_frame_counter += 1
+            if self._robot_process_frame_counter % Config.YOLO_PROCESS_EVERY_N_FRAMES != 0:
+                with self._robot_frame_lock:
+                    self._robot_last_frame = frame
+                continue
+
+            current_time = time.time()
+
+            stale_ids = [
+                tid for tid, info in self._robot_track_names.items()
+                if current_time - info.get('last_seen', 0) > Config.STALE_TRACK_TTL
+            ]
+            for tid in stale_ids:
+                del self._robot_track_names[tid]
+
+            try:
+                results = self._robot_model.track(
+                    frame,
+                    persist=True,
+                    verbose=False,
+                    conf=Config.YOLO_CONF_THRESHOLD,
+                    tracker='bytetrack.yaml',
+                )
+            except Exception as exc:
+                logger.error(f'Robot camera tracking error: {exc}')
+                try:
+                    results = self._robot_model(frame, verbose=False, conf=Config.YOLO_CONF_THRESHOLD)
+                except Exception:
+                    continue
+
+            annotated = frame.copy()
+
+            for result in results:
+                if result.boxes is None:
+                    continue
+
+                boxes = result.boxes.xyxy.cpu().numpy() if result.boxes.xyxy is not None else []
+                confs = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else []
+                classes = result.boxes.cls.cpu().numpy() if result.boxes.cls is not None else []
+                track_ids = (
+                    result.boxes.id.cpu().numpy().astype(int)
+                    if result.boxes.id is not None
+                    else [None] * len(boxes)
+                )
+
+                for box, conf, cls, track_id in zip(boxes, confs, classes, track_ids):
+                    x1, y1, x2, y2 = map(int, box)
+                    label = self._robot_model.names[int(cls)]
+
+                    if label != 'person':
+                        continue
+
+                    display_text, color = self._handle_robot_person(
+                        frame, x1, y1, x2, y2, conf, track_id, current_time
+                    )
+
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(
+                        annotated, display_text, (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
+                    )
+
+            with self._robot_frame_lock:
+                self._robot_last_frame = annotated
+
+        logger.info('Robot camera processing thread exited.')
+
+    def _handle_robot_person(
+        self,
+        frame: np.ndarray,
+        x1: int, y1: int, x2: int, y2: int,
+        conf: float,
+        track_id: Optional[int],
+        current_time: float,
+    ) -> tuple[str, tuple]:
+        color = (0, 0, 255)
+
+        if track_id is None:
+            return 'person', color
+
+        info = self._robot_track_names.get(track_id)
+
+        if info is None:
+            if conf >= Config.PERSON_CONF_THRESHOLD:
+                future = self._face_executor.submit(
+                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
+                )
+                name = 'Checking...'
+            else:
+                future = None
+                name = 'Unknown'
+            self._robot_track_names[track_id] = {
+                'name':            name,
+                'last_seen':       current_time,
+                'last_face_check': current_time,
+                'future':          future,
+            }
+        else:
+            info['last_seen'] = current_time
+
+            future = info.get('future')
+            if future is not None and future.done():
+                try:
+                    identified_name, enc, _image_path = future.result()
+                    info['name'] = identified_name
+                except Exception as exc:
+                    logger.error(f'Robot face future error: {exc}')
+                    info['name'] = 'Unknown'
+                info['future'] = None
+                info['last_face_check'] = current_time
+
+            name = info['name']
+
+            if (
+                name == 'Unknown'
+                and info.get('future') is None
+                and conf >= Config.PERSON_CONF_THRESHOLD
+                and current_time - info.get('last_face_check', 0) > Config.UNKNOWN_FACE_RECHECK_INTERVAL
+            ):
+                info['future'] = self._face_executor.submit(
+                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
+                )
+
+        name = self._robot_track_names[track_id]['name']
+
+        if name not in ('Unknown', 'Checking...'):
+            color = (0, 255, 0)
+
+        return name, color
+
+    def check_obstacle(self, frame: np.ndarray) -> Optional[str]:
+        """
+        Run a quick YOLO pass on a robot-camera frame.
+        Returns 'L' or 'R' to steer around a close obstacle, None if path is clear.
+        Only flags objects that are large (close) and centred in the frame.
+        """
+        try:
+            results = self.model(frame, verbose=False, conf=0.45)
+            if not results or results[0].boxes is None:
+                return None
+            h, w = frame.shape[:2]
+            cx1, cx2 = w * 0.25, w * 0.75
+            for box in results[0].boxes.xyxy.cpu().numpy():
+                x1, y1, x2, y2 = map(int, box)
+                box_cx      = (x1 + x2) / 2
+                box_h_pct   = (y2 - y1) / h
+                if cx1 < box_cx < cx2 and box_h_pct > 0.35:
+                    # Steer away from the obstacle toward the emptier side
+                    return 'R' if box_cx < w / 2 else 'L'
+            return None
+        except Exception:
+            return None
+
+    def start_return_home(self) -> bool:
+        """Manual return to home — suppresses follow commands during the return."""
+        if self._homing:
+            return False
+        self._homing = True
+        started = robot_controller.return_to_home(
+            on_complete=self._on_manual_home_reached,
+        )
+        if not started:
+            self._homing = False
+        return started
+
+    def _on_manual_home_reached(self) -> None:
+        self._homing = False
+        robot_controller.resume_movement_logging()
+        logger.info('Manual return to home: complete')
+
+    def _trigger_intercept(self, track_id: int) -> None:
+        """Return to camera home position then scan for the detected target."""
+        self._priority_track_id = track_id
+        self._pre_intercept_follow_unknowns = self.follow_unknowns
+        self._homing = True
+        logger.info(f'Intercept triggered for track {track_id} — returning to home')
+
+        started = robot_controller.return_to_home(
+            on_complete=self._on_home_reached,
+        )
+        if not started:
+            # Not connected or log empty — skip homing and go straight to scan
+            self._homing = False
+            self._on_home_reached()
+
+    def _on_home_reached(self) -> None:
+        """Called when the robot has finished its return-to-home sequence."""
+        self._homing = False
+        robot_controller.pause_movement_logging()   # scan turns must not enter the path log
+        self.follow_unknowns = True
+        self._scan_active = True
+        self._scan_start_time = time.time()
+        logger.info('Intercept: home reached — rotating to scan for target')
+
+    def _end_intercept(self) -> None:
+        """Cancel the intercept and restore pre-intercept follow state."""
+        self._scan_active = False
+        self._priority_track_id = None
+        self.follow_unknowns = self._pre_intercept_follow_unknowns
+        robot_controller.send_command('S', force=True)
+        robot_controller.resume_movement_logging()
+        logger.info('Intercept: ended (scan timeout)')
 
     # ════════════════════════════════════════════════════════════════════
     # Alert helpers

@@ -342,6 +342,26 @@ export const api = {
                 body: JSON.stringify({ enabled })
             });
             return response.json();
+        },
+        registerHome: async () => {
+            const token = localStorage.getItem('token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            const response = await fetch(`${API_BASE_URL}/robot/register_home`, {
+                method: 'POST',
+                headers
+            });
+            return response.json();
+        },
+        returnHome: async () => {
+            const token = localStorage.getItem('token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+            const response = await fetch(`${API_BASE_URL}/robot/return_home`, {
+                method: 'POST',
+                headers
+            });
+            return response.json();
         }
     }
 };

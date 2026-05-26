@@ -1,4 +1,5 @@
 import logging
+import time
 import requests as req_lib
 from flask import Blueprint, jsonify, request, current_app, Response, stream_with_context
 from flask_jwt_extended import jwt_required
@@ -28,11 +29,34 @@ def get_status():
 
 @robot_bp.route('/camera_feed')
 def robot_camera_feed():
-    """Proxy the ESP32-CAM MJPEG stream — avoids browser CORS restrictions.
+    """Serve the robot camera stream with face-recognition annotations.
 
-    Optional query params ``host`` and ``port`` allow per-camera robot streams.
-    Falls back to the globally connected robot when omitted.
+    When the VideoProcessor has an active robot camera pipeline the route
+    serves annotated MJPEG frames (same format as the main /video_feed).
+    Falls back to a raw proxy of the ESP32-CAM stream when the processor
+    is not running (e.g. robot not yet connected through the UI).
+
+    Optional query params ``host`` and ``port`` are honoured in fallback mode.
     """
+    vp = getattr(current_app, 'video_processor', None)
+
+    if vp and vp._robot_processing:
+        def generate_annotated():
+            interval = 1.0 / Config.STREAM_TARGET_FPS
+            while True:
+                t0 = time.time()
+                frame = vp.get_robot_frame()
+                if frame:
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+                sleep_t = interval - (time.time() - t0)
+                time.sleep(max(0.005, sleep_t))
+
+        return Response(
+            stream_with_context(generate_annotated()),
+            mimetype='multipart/x-mixed-replace; boundary=frame',
+        )
+
+    # Fallback: proxy the raw ESP32-CAM MJPEG stream
     host = (request.args.get('host') or '').strip() or robot_controller.host
     port = int(request.args.get('port') or Config.ROBOT_CAMERA_PORT)
 
@@ -75,12 +99,23 @@ def connect():
     host = data.get('host')
     port = data.get('port')
     success, message = robot_controller.connect(host, int(port) if port else None)
+
+    if success and robot_controller.host:
+        vp = getattr(current_app, 'video_processor', None)
+        if vp:
+            cam_url = f'http://{robot_controller.host}:{Config.ROBOT_CAMERA_PORT}/stream'
+            vp.start_robot_camera_processing(cam_url)
+
     return jsonify({'success': success, 'message': message})
 
 
 @robot_bp.route('/disconnect', methods=['POST'])
 @jwt_required()
 def disconnect():
+    vp = getattr(current_app, 'video_processor', None)
+    if vp:
+        vp.stop_robot_camera_processing()
+
     success, message = robot_controller.disconnect()
     return jsonify({'success': success, 'message': message})
 
@@ -132,6 +167,33 @@ def toggle_follow():
         'auto_follow': enabled,
         'known_only':  known_only,
     })
+
+
+@robot_bp.route('/return_home', methods=['POST'])
+@jwt_required()
+def return_home():
+    """Send the robot back to its registered home position at fast return speed."""
+    vp = getattr(current_app, 'video_processor', None)
+    if vp:
+        started = vp.start_return_home()
+    else:
+        started = robot_controller.return_to_home()
+
+    if started:
+        return jsonify({'success': True, 'message': 'Returning to home position'})
+    status = robot_controller.get_home_status()
+    if status['returning_home']:
+        return jsonify({'success': False, 'message': 'Already returning home'})
+    return jsonify({'success': False, 'message': 'Robot not connected'})
+
+
+@robot_bp.route('/register_home', methods=['POST'])
+@jwt_required()
+def register_home():
+    """Mark the robot's current position as home for dead-reckoning intercept."""
+    robot_controller.register_home()
+    status = robot_controller.get_home_status()
+    return jsonify({'success': True, 'message': 'Home position registered', **status})
 
 
 @robot_bp.route('/follow_unknowns', methods=['POST'])
