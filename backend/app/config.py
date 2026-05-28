@@ -72,7 +72,9 @@ class Config:
     # Worker threads for face encoding executor
     FACE_EXECUTOR_WORKERS: int = int(os.environ.get('FACE_EXECUTOR_WORKERS', '2'))
     # Run full YOLO tracking every N frames; raw frame is passed through on skipped frames
-    YOLO_PROCESS_EVERY_N_FRAMES: int = int(os.environ.get('YOLO_PROCESS_EVERY_N_FRAMES', '2'))
+    YOLO_PROCESS_EVERY_N_FRAMES: int = int(os.environ.get('YOLO_PROCESS_EVERY_N_FRAMES', '1'))
+    # Input resolution fed to YOLO (must be a multiple of 32); 320 is ~4× faster than 640
+    YOLO_IMGSZ: int = int(os.environ.get('YOLO_IMGSZ', '320'))
     # Target FPS for the MJPEG video_feed stream sent to the browser
     STREAM_TARGET_FPS: int = int(os.environ.get('STREAM_TARGET_FPS', '25'))
 

@@ -118,6 +118,8 @@ def disconnect():
     vp = getattr(current_app, 'video_processor', None)
     if vp:
         vp.stop_robot_camera_processing()
+        vp.set_auto_follow(False)
+        vp.set_follow_unknowns(False)
 
     success, message = robot_controller.disconnect()
     return jsonify({'success': success, 'message': message})
@@ -162,6 +164,9 @@ def toggle_follow():
     vp = getattr(current_app, 'video_processor', None)
     if not vp:
         return jsonify({'success': False, 'message': 'Video processor not active'}), 503
+
+    if enabled and not robot_controller.is_connected:
+        return jsonify({'success': False, 'message': 'Robot is not connected'}), 409
 
     vp.set_auto_follow(enabled, known_only=known_only)
     return jsonify({
@@ -208,6 +213,9 @@ def toggle_follow_unknowns():
     vp = getattr(current_app, 'video_processor', None)
     if not vp:
         return jsonify({'success': False, 'message': 'Video processor not active'}), 503
+
+    if enabled and not robot_controller.is_connected:
+        return jsonify({'success': False, 'message': 'Robot is not connected'}), 409
 
     vp.set_follow_unknowns(enabled)
     return jsonify({

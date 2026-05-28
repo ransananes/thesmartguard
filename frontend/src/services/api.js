@@ -266,6 +266,19 @@ export const api = {
         return data;
     },
 
+    clearDetections: async () => {
+        const token = localStorage.getItem('token');
+        const headers = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const response = await fetch(`${API_BASE_URL}/detections/clear`, {
+            method: 'POST',
+            headers
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Failed to clear detections');
+        return data;
+    },
+
     addFaceFromDetection: async (detectionId, name) => {
         const token = localStorage.getItem('token');
         const headers = { 'Content-Type': 'application/json' };

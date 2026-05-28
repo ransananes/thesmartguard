@@ -85,6 +85,8 @@ class VideoProcessor:
         self._faces_lock = threading.Lock()
         # dlib (used by face_recognition) is not thread-safe; serialize all calls
         self._face_recognition_lock = threading.Lock()
+        # serialize face_model inference — concurrent calls saturate CPU and slow main YOLO
+        self._face_model_lock = threading.Lock()
         self._reload_faces_needed = False
 
         # ── Detection settings ───────────────────────────────────────────
@@ -95,6 +97,8 @@ class VideoProcessor:
         # ── Cooldown / alert tracking ────────────────────────────────────
         self._last_detection_alert: dict[str, float] = {}
         self._alert_lock = threading.Lock()
+        # Recent unknown-face encodings: [(encoding, alerted_at)] for dedup across track_ids
+        self._recent_alerted_encodings: list[tuple[np.ndarray, float]] = []
 
         # track_id → {name, last_seen, face_encoding, last_face_check, future}
         self.track_names: dict[int, dict] = {}
@@ -396,6 +400,7 @@ class VideoProcessor:
     # ════════════════════════════════════════════════════════════════════
 
     def _processing_loop(self) -> None:
+        _frame_counter = 0
         with self.app.app_context():
             while self.processing:
                 try:
@@ -407,10 +412,23 @@ class VideoProcessor:
                     break
 
                 frame = item
+                _frame_counter += 1
 
                 if self._reload_faces_needed:
                     self._perform_face_reload()
                     self._reload_faces_needed = False
+                    with self._faces_lock:
+                        valid_names = set(self.known_face_names)
+                    for info in self.track_names.values():
+                        if info.get('name') not in ('Unknown', 'Checking...') and info.get('name') not in valid_names:
+                            info['name'] = 'Unknown'
+                            info['future'] = None
+                            info['last_face_check'] = 0
+                            info['unknown_since'] = time.time()
+                            info['notified'] = False
+
+                if _frame_counter % Config.YOLO_PROCESS_EVERY_N_FRAMES != 0:
+                    continue  # keep last known _last_detections; get_frame() reuses them
 
                 current_time = time.time()
 
@@ -430,11 +448,12 @@ class VideoProcessor:
                         verbose=False,
                         conf=Config.YOLO_CONF_THRESHOLD,
                         tracker='bytetrack.yaml',
+                        imgsz=Config.YOLO_IMGSZ,
                     )
                 except Exception as exc:
                     logger.error(f'Tracking error: {exc}')
                     try:
-                        results = self.model(frame, verbose=False, conf=Config.YOLO_CONF_THRESHOLD)
+                        results = self.model(frame, verbose=False, conf=Config.YOLO_CONF_THRESHOLD, imgsz=Config.YOLO_IMGSZ)
                     except Exception as exc2:
                         logger.error(f'Fallback detection error: {exc2}')
                         continue
@@ -738,9 +757,10 @@ class VideoProcessor:
 
         # Stage 1: YOLO face model locates the face inside the person crop
         try:
-            face_results = self.face_model(
-                person_crop, verbose=False, conf=Config.FACE_CONF_THRESHOLD
-            )
+            with self._face_model_lock:
+                face_results = self.face_model(
+                    person_crop, verbose=False, conf=Config.FACE_CONF_THRESHOLD
+                )
         except Exception as exc:
             logger.error(f'Face model inference error: {exc}')
             return 'Unknown', None, None
@@ -842,7 +862,13 @@ class VideoProcessor:
             person_height_pct = (y2 - y1) / frame_height
             command = 'F' if person_height_pct < 0.6 else 'S'
 
-        robot_controller.send_command(command, force=True)
+        ok, _ = robot_controller.send_command(command, force=True)
+        if not ok:
+            logger.warning('Auto-follow: robot unreachable — disabling follow modes')
+            self.auto_follow = False
+            self.follow_unknowns = False
+            self._current_follow_target = None
+            return
         self._last_follow_command = command
 
         if command in ('L', 'R'):
@@ -1034,11 +1060,12 @@ class VideoProcessor:
                     verbose=False,
                     conf=Config.YOLO_CONF_THRESHOLD,
                     tracker='bytetrack.yaml',
+                    imgsz=Config.YOLO_IMGSZ,
                 )
             except Exception as exc:
                 logger.error(f'Robot camera tracking error: {exc}')
                 try:
-                    results = self._robot_model(frame, verbose=False, conf=Config.YOLO_CONF_THRESHOLD)
+                    results = self._robot_model(frame, verbose=False, conf=Config.YOLO_CONF_THRESHOLD, imgsz=Config.YOLO_IMGSZ)
                 except Exception:
                     continue
 
@@ -1121,7 +1148,7 @@ class VideoProcessor:
         Only flags objects that are large (close) and centred in the frame.
         """
         try:
-            results = self.model(frame, verbose=False, conf=0.45)
+            results = self.model(frame, verbose=False, conf=0.45, imgsz=Config.YOLO_IMGSZ)
             if not results or results[0].boxes is None:
                 return None
             h, w = frame.shape[:2]
@@ -1227,11 +1254,31 @@ class VideoProcessor:
             if alert_category not in self.enabled_labels:
                 return
 
-        track_key = f'track:{track_id}'
-        with self._alert_lock:
-            if current_time - self._last_detection_alert.get(track_key, 0) < Config.ALERT_COOLDOWN:
-                return
-            self._last_detection_alert[track_key] = current_time
+        if name != 'Unknown':
+            # Known face: dedup by name so the same person doesn't re-alert on a new track_id
+            alert_key = f'face:{name}'
+            with self._alert_lock:
+                if current_time - self._last_detection_alert.get(alert_key, 0) < Config.ALERT_COOLDOWN:
+                    return
+                self._last_detection_alert[alert_key] = current_time
+        else:
+            # Unknown face: dedup by track_id AND by encoding similarity across track_ids
+            alert_key = f'track:{track_id}'
+            face_enc = self.track_names.get(track_id, {}).get('face_encoding')
+            with self._alert_lock:
+                if current_time - self._last_detection_alert.get(alert_key, 0) < Config.ALERT_COOLDOWN:
+                    return
+                # Evict stale entries then check if this face was recently alerted
+                self._recent_alerted_encodings = [
+                    (enc, t) for enc, t in self._recent_alerted_encodings
+                    if current_time - t < Config.ALERT_COOLDOWN
+                ]
+                if face_enc is not None:
+                    for enc, _ in self._recent_alerted_encodings:
+                        if face_recognition.face_distance([enc], face_enc)[0] < Config.FACE_TOLERANCE:
+                            return
+                    self._recent_alerted_encodings.append((face_enc, current_time))
+                self._last_detection_alert[alert_key] = current_time
 
         logger.info(f'[FACE ALERT] {name} (track={track_id})')
 

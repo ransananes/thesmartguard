@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, Upload, Trash2, UserPlus, Loader2 } from 'lucide-react';
+import { Camera, Upload, Trash2, UserPlus, Loader2, X } from 'lucide-react';
 import { api } from '../services/api';
 import toast from 'react-hot-toast';
 
@@ -11,6 +11,7 @@ const RecognizedFaces = () => {
     const [isUploading, setIsUploading] = useState(false);
     const [deletingId, setDeletingId] = useState(null);
     const [recentDetections, setRecentDetections] = useState([]);
+    const [isClearing, setIsClearing] = useState(false);
 
     useEffect(() => {
         loadFaces();
@@ -69,6 +70,20 @@ const RecognizedFaces = () => {
         }
     };
 
+    const handleClearDetections = async () => {
+        if (!window.confirm('Clear all recent detections?')) return;
+        setIsClearing(true);
+        try {
+            await api.clearDetections();
+            setRecentDetections([]);
+            toast.success('Detections cleared.');
+        } catch (error) {
+            toast.error('Failed to clear detections.');
+        } finally {
+            setIsClearing(false);
+        }
+    };
+
     const handleDelete = async (id) => {
         if (!window.confirm('Are you sure?')) return;
         
@@ -117,7 +132,17 @@ const RecognizedFaces = () => {
                     <div className="space-y-4">
                              <div className="flex justify-between items-center">
                                  <h4 className="text-xs font-bold text-neutral-400 uppercase tracking-widest pl-1">Recent Detections</h4>
-                                 <button onClick={fetchDetections} className="text-xs text-purple-400 hover:text-purple-300">Refresh</button>
+                                 <div className="flex items-center gap-2">
+                                     <button onClick={fetchDetections} className="text-xs text-purple-400 hover:text-purple-300">Refresh</button>
+                                     <button
+                                         onClick={handleClearDetections}
+                                         disabled={isClearing || recentDetections.length === 0}
+                                         className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40 flex items-center gap-1"
+                                     >
+                                         {isClearing ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />}
+                                         Clear
+                                     </button>
+                                 </div>
                              </div>
                              
                              {recentDetections.length === 0 ? (

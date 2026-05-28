@@ -126,6 +126,7 @@ def clear_detections():
         if vp:
             vp._last_detection_alert.clear()
             vp.track_names.clear()
+            vp._recent_alerted_encodings.clear()
 
         return jsonify({'success': True, 'deleted_records': count, 'deleted_files': deleted_files})
     except Exception as exc:
