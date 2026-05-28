@@ -24,8 +24,9 @@ const RecentActivity = () => {
 
     const formatTime = (isoString) => {
         if (!isoString) return '';
-        const date = new Date(isoString + 'Z'); 
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const normalized = /[Z+]/.test(isoString) ? isoString : isoString + 'Z';
+        const date = new Date(normalized);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Jerusalem' });
     };
 
     return (

@@ -43,11 +43,14 @@ def robot_camera_feed():
     if vp and vp._robot_processing:
         def generate_annotated():
             interval = 1.0 / Config.STREAM_TARGET_FPS
-            while True:
+            last_frame = None
+            while vp._robot_processing:
                 t0 = time.time()
                 frame = vp.get_robot_frame()
                 if frame:
-                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+                    last_frame = frame
+                if last_frame:
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + last_frame + b'\r\n'
                 sleep_t = interval - (time.time() - t0)
                 time.sleep(max(0.005, sleep_t))
 

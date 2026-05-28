@@ -70,7 +70,7 @@ class Config:
     # Max detections to buffer before writing to DB
     DETECTION_QUEUE_SIZE: int = int(os.environ.get('DETECTION_QUEUE_SIZE', '100'))
     # Worker threads for face encoding executor
-    FACE_EXECUTOR_WORKERS: int = int(os.environ.get('FACE_EXECUTOR_WORKERS', '1'))
+    FACE_EXECUTOR_WORKERS: int = int(os.environ.get('FACE_EXECUTOR_WORKERS', '2'))
     # Run full YOLO tracking every N frames; raw frame is passed through on skipped frames
     YOLO_PROCESS_EVERY_N_FRAMES: int = int(os.environ.get('YOLO_PROCESS_EVERY_N_FRAMES', '2'))
     # Target FPS for the MJPEG video_feed stream sent to the browser
@@ -89,10 +89,16 @@ class Config:
     ROBOT_CAMERA_PORT: int = int(os.environ.get('ROBOT_CAMERA_PORT', '81'))
     # Seconds the robot will rotate scanning for a target after returning home
     INTERCEPT_SCAN_TIMEOUT: float = float(os.environ.get('INTERCEPT_SCAN_TIMEOUT', '30.0'))
-    # Seconds the main camera must fail to identify a person before the robot engages
-    ROBOT_ENGAGE_DELAY: float = float(os.environ.get('ROBOT_ENGAGE_DELAY', '2.5'))
+    # Seconds a person must remain confirmed Unknown before the robot auto-follows
+    ROBOT_ENGAGE_DELAY: float = float(os.environ.get('ROBOT_ENGAGE_DELAY', '3.0'))
     # Seconds a confirmed Unknown person must persist before a notification is sent
     UNKNOWN_NOTIFY_DELAY: float = float(os.environ.get('UNKNOWN_NOTIFY_DELAY', '5.0'))
+    # Seconds the robot continues its last follow command after losing sight of the target
+    FOLLOW_PERSISTENCE_S: float = float(os.environ.get('FOLLOW_PERSISTENCE_S', '1.5'))
+    # ESP32 auto-stop timeout (ms) — firmware stops motors if no command arrives within this window.
+    # After a turn command the next steering decision is delayed by this value so the
+    # camera gets a still frame; no explicit stop command is needed.
+    ESP32_AUTO_STOP_MS: int = int(os.environ.get('ESP32_AUTO_STOP_MS', '300'))
     # Minimum move duration (ms) worth logging for dead-reckoning
     MOVE_LOG_MIN_MS: int = int(os.environ.get('MOVE_LOG_MIN_MS', '50'))
     # Duration (ms) of the 180° spin at the start of return-to-home

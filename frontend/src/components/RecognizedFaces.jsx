@@ -148,7 +148,7 @@ const RecognizedFaces = () => {
                                                 <div className="flex justify-between items-start">
                                                     <p className={`font-medium truncate ${isUnknown ? 'text-red-200' : 'text-green-200'}`}>{name}</p>
                                                     <span className="text-xs text-neutral-500 whitespace-nowrap">
-                                                        {new Date(det.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                                        {new Date(/[Z+]/.test(det.timestamp) ? det.timestamp : det.timestamp + 'Z').toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Jerusalem'})}
                                                     </span>
                                                 </div>
                                                 <p className="text-xs text-neutral-500 mt-1 capitalize">{det.label}</p>

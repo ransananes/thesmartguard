@@ -96,6 +96,12 @@ class RobotController:
 
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            try:
+                # Windows: idle=10 s, interval=3 s, max probes=3
+                s.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 10_000, 3_000))
+            except AttributeError:
+                pass  # non-Windows — kernel defaults apply
             s.settimeout(CONNECT_TIMEOUT)
             s.connect((self.host, self.port))
             s.settimeout(SEND_TIMEOUT)
@@ -171,18 +177,18 @@ class RobotController:
                 self._sock.sendall(f'{command}\n'.encode())
                 return True, f'Command {command} sent'
             except Exception as exc:
-                logger.error(f'RobotController send error: {exc}')
-                # Socket is dead — drop it and reconnect on next call
+                # Socket was reset (e.g. ESP32 rebooted) — reconnect and retry once.
+                logger.warning(f'RobotController: connection lost ({exc}), reconnecting…')
                 try:
                     self._sock.close()
                 except Exception:
                     pass
                 self._sock = None
-                # Attempt one immediate reconnect and retry
                 ok, msg = self._open_socket()
                 if ok:
                     try:
                         self._sock.sendall(f'{command}\n'.encode())
+                        logger.info('RobotController: reconnected and command sent')
                         return True, f'Command {command} sent (after reconnect)'
                     except Exception as exc2:
                         logger.error(f'RobotController retry error: {exc2}')

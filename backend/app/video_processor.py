@@ -40,11 +40,11 @@ class VideoProcessor:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         logger.info(f'VideoProcessor using device: {self.device}')
 
-        self.model = YOLO('yolov8n.pt')
+        self.model = YOLO('yolo11n.pt')
         self.model.to(self.device)
         logger.info('YOLO object model loaded')
 
-        self.face_model = YOLO('yolov8n-face.pt')
+        self.face_model = YOLO('yolov12n-face.pt')
         self.face_model.to(self.device)
         logger.info('YOLO face model loaded')
 
@@ -54,9 +54,15 @@ class VideoProcessor:
         self.camera_url: Optional[str] = None
         self.camera_name: str = ''
 
-        # ── Shared frame (written by processing thread, read by route) ──
+        # ── Raw frame: written by capture thread every frame, read by get_frame() ──
+        self._raw_frame_lock = threading.Lock()
+        self._raw_frame: Optional[np.ndarray] = None
+
+        # ── Annotations: written by processing thread after YOLO, read by get_frame() ──
+        self._detections_lock = threading.Lock()
+
+        # ── current_faces / current_person_count (for live_status endpoint) ──
         self._frame_lock = threading.Lock()
-        self._last_frame: Optional[np.ndarray] = None
         self.current_faces: list[str] = []
         self.current_person_count: int = 0
 
@@ -99,6 +105,8 @@ class VideoProcessor:
         self.follow_unknowns: bool = False  # auto-engage robot when unknown person confirmed
         self._last_robot_command_time: float = 0.0
         self._current_follow_target: Optional[str] = None
+        self._last_follow_time: float = 0.0       # last frame a follow target was visible
+        self._last_follow_command: str = 'S'       # last directional command sent while following
 
         # ── Intercept: detection-triggered home-return + scan ────────────
         self._homing: bool = False                       # robot is autonomously returning home
@@ -107,8 +115,9 @@ class VideoProcessor:
         self._priority_track_id: Optional[int] = None
         self._pre_intercept_follow_unknowns: bool = False
 
-        # ── Frame counter for YOLO skip ──────────────────────────────────
-        self._process_frame_counter: int = 0
+        self._last_detections: list = []   # [(x1,y1,x2,y2,color,text)] published each YOLO frame
+        self._last_object_count: int = 0
+        self._last_hud: list = []          # [(x, y, text, scale, color, thickness)]
 
         # ── Unknown-person notification counter ──────────────────────────
         # Incremented each time a track stays Unknown for >= UNKNOWN_NOTIFY_DELAY.
@@ -118,7 +127,7 @@ class VideoProcessor:
         # ── Robot camera ─────────────────────────────────────────────────
         # Separate YOLO instance so its bytetrack state never collides with
         # the main camera's tracker (each instance owns its own predictor/tracker).
-        self._robot_model = YOLO('yolov8n.pt')
+        self._robot_model = YOLO('yolo11n.pt')
         self._robot_model.to(self.device)
 
         self._robot_frame_lock = threading.Lock()
@@ -130,6 +139,12 @@ class VideoProcessor:
         self._robot_cam_url: Optional[str] = None
         self._robot_track_names: dict[int, dict] = {}
         self._robot_process_frame_counter: int = 0
+
+        # Latest person bounding box seen by the robot camera — used to steer when
+        # the main camera has lost the target.  Written by robot thread, read by main thread.
+        self._robot_follow_box: Optional[tuple] = None   # (x1, y1, x2, y2, frame_w)
+        self._robot_follow_box_time: float = 0.0
+        self._robot_follow_lock = threading.Lock()
 
         # ── Bootstrap ────────────────────────────────────────────────────
         self._perform_face_reload()
@@ -237,8 +252,13 @@ class VideoProcessor:
         self.camera_name = camera_name
 
         with self._frame_lock:
-            self._last_frame   = None
             self.current_faces = []
+        with self._raw_frame_lock:
+            self._raw_frame = None
+        with self._detections_lock:
+            self._last_detections   = []
+            self._last_object_count = 0
+            self._last_hud          = []
 
         self._last_detection_alert.clear()
         self.track_names.clear()
@@ -270,8 +290,8 @@ class VideoProcessor:
         self._capture_thread = None
         self._process_thread = None
 
-        with self._frame_lock:
-            self._last_frame = None
+        with self._raw_frame_lock:
+            self._raw_frame = None
 
         logger.info('Processing stopped.')
 
@@ -280,12 +300,29 @@ class VideoProcessor:
     # ════════════════════════════════════════════════════════════════════
 
     def get_frame(self) -> Optional[bytes]:
-        with self._frame_lock:
-            if self._last_frame is None:
+        with self._raw_frame_lock:
+            if self._raw_frame is None:
                 return None
+            raw = self._raw_frame  # capture thread replaces reference, never mutates in-place
+
+        with self._detections_lock:
+            detections = self._last_detections
+            hud        = self._last_hud
+
+        if detections or hud:
+            display = raw.copy()
+            for dx1, dy1, dx2, dy2, dcolor, dtext in detections:
+                cv2.rectangle(display, (dx1, dy1), (dx2, dy2), dcolor, 2)
+                cv2.putText(display, dtext, (dx1, dy1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, dcolor, 2)
+            for hx, hy, htext, hscale, hcolor, hthick in hud:
+                cv2.putText(display, htext, (hx, hy),
+                            cv2.FONT_HERSHEY_SIMPLEX, hscale, hcolor, hthick)
+        else:
+            display = raw
+
         encode_params = [cv2.IMWRITE_JPEG_QUALITY, Config.STREAM_JPEG_QUALITY]
-        with self._frame_lock:
-            ret, buffer = cv2.imencode('.jpg', self._last_frame, encode_params)
+        ret, buffer = cv2.imencode('.jpg', display, encode_params)
         return buffer.tobytes() if ret else None
 
     # ════════════════════════════════════════════════════════════════════
@@ -331,6 +368,9 @@ class VideoProcessor:
 
             consecutive_failures = 0
 
+            with self._raw_frame_lock:
+                self._raw_frame = frame
+
             try:
                 self._frame_queue.put_nowait(frame)
             except queue.Full:
@@ -368,13 +408,6 @@ class VideoProcessor:
 
                 frame = item
 
-                # ── YOLO frame-skip: pass raw frame to display on skipped frames ──
-                self._process_frame_counter += 1
-                if self._process_frame_counter % Config.YOLO_PROCESS_EVERY_N_FRAMES != 0:
-                    with self._frame_lock:
-                        self._last_frame = frame
-                    continue
-
                 if self._reload_faces_needed:
                     self._perform_face_reload()
                     self._reload_faces_needed = False
@@ -389,7 +422,7 @@ class VideoProcessor:
                 for tid in stale_ids:
                     del self.track_names[tid]
 
-                # ── YOLO tracking ────────────────────────────────────────
+                # ── YOLO tracking (every queued frame — ByteTrack requires it) ──
                 try:
                     results = self.model.track(
                         frame,
@@ -406,13 +439,12 @@ class VideoProcessor:
                         logger.error(f'Fallback detection error: {exc2}')
                         continue
 
-                annotated    = frame.copy()
                 object_count = 0
                 current_frame_names: list[str] = []
+                frame_detections: list = []   # (x1, y1, x2, y2, color, text)
+                frame_hud: list = []          # (x, y, text, scale, color, thickness)
 
                 # ── Follow candidates ────────────────────────────────────
-                # known_target  → (x1,y1,x2,y2, name)  best known face seen
-                # unknown_target→ (x1,y1,x2,y2, name)  largest unknown person
                 known_target:   Optional[tuple] = None
                 unknown_target: Optional[tuple] = None
                 max_known_area   = 0
@@ -458,16 +490,13 @@ class VideoProcessor:
                                 name = self.track_names.get(track_id, {}).get('name', 'Unknown')
 
                                 if name not in ('Unknown', 'Checking...'):
-                                    # Confirmed known face — highest priority
                                     if area > max_known_area:
                                         max_known_area = area
                                         known_target   = (x1, y1, x2, y2, name)
                                 elif name == 'Unknown':
-                                    # Confirmed unknown (identification finished, not in DB)
                                     if area > max_unknown_area:
                                         max_unknown_area = area
                                         unknown_target   = (x1, y1, x2, y2, name)
-                                # 'Checking...' — skip until identification resolves
 
                         else:
                             label_lower = label.lower()
@@ -476,23 +505,14 @@ class VideoProcessor:
                             display_text = f'{label} {conf:.2f}'
                             self._queue_object_alert(label, conf, current_time)
 
-                        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(
-                            annotated, display_text, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
-                        )
+                        frame_detections.append((x1, y1, x2, y2, color, display_text))
 
-                cv2.putText(
-                    annotated, f'Objects: {object_count}', (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
-                )
+                frame_hud.append((10, 60, f'Objects: {object_count}', 0.7, (0, 255, 255), 2))
 
                 # ── Auto-follow / follow-unknowns decision ───────────────
                 in_follow_mode = self.auto_follow or self.follow_unknowns
 
                 if self._homing:
-                    # Robot is autonomously returning to camera home position —
-                    # suppress all follow commands to avoid interrupting the sequence.
                     self._current_follow_target = None
 
                 elif in_follow_mode:
@@ -505,36 +525,51 @@ class VideoProcessor:
                             else (known_target or unknown_target)
                         )
 
-                    # follow_unknowns fills in when auto_follow left nothing
                     if follow_target is None and self.follow_unknowns:
                         follow_target = unknown_target
 
                     if follow_target:
                         fx1, fy1, fx2, fy2, follow_name = follow_target
                         self._current_follow_target = follow_name
+                        self._last_follow_time = current_time
 
                         if self._scan_active:
                             self._scan_active = False
-                            robot_controller.resume_movement_logging()  # resume path logging now that we're following
+                            robot_controller.resume_movement_logging()
 
-                        cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), (255, 255, 0), 3)
-                        cv2.putText(
-                            annotated,
-                            f'FOLLOWING: {follow_name}',
-                            (fx1, fy1 - 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2,
-                        )
+                        # Yellow highlight over the follow target, drawn on top of its normal box
+                        frame_detections.append((fx1, fy1, fx2, fy2, (255, 255, 0), f'FOLLOWING: {follow_name}'))
+
                         self._handle_auto_follow((fx1, fy1, fx2, fy2), frame.shape[1])
 
                     else:
                         self._current_follow_target = None
 
-                        if self._scan_active:
-                            # Rotate slowly to search for the target
+                        with self._robot_follow_lock:
+                            rbox = self._robot_follow_box
+                            rbox_time = self._robot_follow_box_time
+                        robot_cam_fresh = (
+                            rbox is not None
+                            and current_time - rbox_time < Config.FOLLOW_PERSISTENCE_S
+                        )
+
+                        if robot_cam_fresh and (self._scan_active or self.follow_unknowns):
+                            if self._scan_active:
+                                self._scan_active = False
+                                robot_controller.resume_movement_logging()
+                            rx1, ry1, rx2, ry2, rfw = rbox
+                            self._last_follow_time = current_time
+                            self._handle_auto_follow((rx1, ry1, rx2, ry2), rfw)
+
+                        elif self._scan_active:
                             if current_time - self._scan_start_time > Config.INTERCEPT_SCAN_TIMEOUT:
                                 self._end_intercept()
                             elif current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
                                 robot_controller.send_command('L', force=True)
+                                self._last_robot_command_time = current_time + Config.ESP32_AUTO_STOP_MS / 1000.0
+                        elif current_time - self._last_follow_time < Config.FOLLOW_PERSISTENCE_S:
+                            if current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
+                                robot_controller.send_command(self._last_follow_command, force=True)
                                 self._last_robot_command_time = current_time
                         else:
                             if current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
@@ -549,17 +584,15 @@ class VideoProcessor:
                         mode_label = ('Known only' if self.follow_known_only else 'All') + ' + unknowns auto'
                     else:
                         mode_label = 'Known only' if self.follow_known_only else 'All persons'
-                    cv2.putText(
-                        annotated,
-                        f'Follow mode: {mode_label}',
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2,
-                    )
+                    frame_hud.append((10, 30, f'Follow mode: {mode_label}', 0.6, (0, 200, 255), 2))
 
-                # ── Publish annotated frame ──────────────────────────────
+                # ── Publish detections + face data ───────────────────────
+                with self._detections_lock:
+                    self._last_detections   = frame_detections
+                    self._last_object_count = object_count
+                    self._last_hud          = frame_hud
                 with self._frame_lock:
-                    self._last_frame         = annotated
-                    self.current_faces       = current_frame_names
+                    self.current_faces        = current_frame_names
                     self.current_person_count = object_count
 
         logger.info('Processing thread exited.')
@@ -576,14 +609,24 @@ class VideoProcessor:
         track_id: Optional[int],
         current_time: float,
         current_frame_names: list[str],
+        *,
+        track_dict: Optional[dict] = None,
+        fire_alerts: bool = True,
     ) -> tuple[str, tuple]:
+        """Unified person/face handler used by both the main camera and robot camera.
+
+        track_dict  – which tracking state dict to use; defaults to self.track_names.
+        fire_alerts – when False, skips notifications, alert queue, and robot auto-engage
+                      (used for the robot camera to avoid duplicating main-camera alerts).
+        """
+        tracks = track_dict if track_dict is not None else self.track_names
         color = (0, 0, 255)   # red = unknown
 
         if track_id is None:
             current_frame_names.append('Unknown')
             return 'person', color
 
-        info = self.track_names.get(track_id)
+        info = tracks.get(track_id)
 
         if info is None:
             if conf >= Config.PERSON_CONF_THRESHOLD:
@@ -594,7 +637,7 @@ class VideoProcessor:
             else:
                 future = None
                 name = 'Unknown'
-            self.track_names[track_id] = {
+            tracks[track_id] = {
                 'name':            name,
                 'last_seen':       current_time,
                 'face_encoding':   None,
@@ -603,7 +646,6 @@ class VideoProcessor:
                 'future':          future,
                 'first_seen':      current_time,
                 'robot_engaged':   False,
-                # unknown_since: set when name first resolves to 'Unknown'
                 'unknown_since':   current_time if name == 'Unknown' else None,
                 'notified':        False,
             }
@@ -624,7 +666,6 @@ class VideoProcessor:
                     info['name'] = 'Unknown'
                 info['future']          = None
                 info['last_face_check'] = current_time
-                # Start the notification timer the moment identification confirms Unknown
                 if info['name'] == 'Unknown' and info.get('unknown_since') is None:
                     info['unknown_since'] = current_time
 
@@ -640,16 +681,18 @@ class VideoProcessor:
                     self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
                 )
 
-        name = self.track_names[track_id]['name']
+        name = tracks[track_id]['name']
         current_frame_names.append(name)
 
         if name not in ('Unknown', 'Checking...'):
             color = (0, 255, 0)   # green = known
 
+        if not fire_alerts:
+            return name, color
+
         self._queue_face_alert(name, track_id, current_time)
 
-        # Persistent-unknown notification: fire once per track after UNKNOWN_NOTIFY_DELAY
-        track_info = self.track_names[track_id]
+        track_info = tracks[track_id]
         if (
             name == 'Unknown'
             and not track_info.get('notified', False)
@@ -663,19 +706,17 @@ class VideoProcessor:
                 f'({current_time - track_info["unknown_since"]:.1f}s unidentified)'
             )
 
-        # Engage the robot only after the camera has failed to confirm the person
-        # within ROBOT_ENGAGE_DELAY seconds (covers both a slow pipeline and a
-        # completed identification that returned 'Unknown').
         if (
-            self.follow_unknowns
-            and not self._homing
+            not self._homing
             and not self._scan_active
-            and name in ('Unknown', 'Checking...')
+            and name == 'Unknown'
             and not track_info.get('robot_engaged', False)
-            and current_time - track_info.get('first_seen', current_time) >= Config.ROBOT_ENGAGE_DELAY
+            and track_info.get('unknown_since') is not None
+            and current_time - track_info['unknown_since'] >= Config.ROBOT_ENGAGE_DELAY
         ):
             track_info['robot_engaged'] = True
-            self._trigger_intercept(track_id)
+            self.follow_unknowns = True
+            logger.info(f'Auto-follow engaged for unknown track {track_id}')
 
         return name, color
 
@@ -796,13 +837,21 @@ class VideoProcessor:
         elif center_x > right_boundary:
             command = 'R'
         else:
-            with self._frame_lock:
-                frame_height = self._last_frame.shape[0] if self._last_frame is not None else 480
+            with self._raw_frame_lock:
+                frame_height = self._raw_frame.shape[0] if self._raw_frame is not None else 480
             person_height_pct = (y2 - y1) / frame_height
             command = 'F' if person_height_pct < 0.6 else 'S'
 
         robot_controller.send_command(command, force=True)
-        self._last_robot_command_time = current_time
+        self._last_follow_command = command
+
+        if command in ('L', 'R'):
+            # Let the ESP32's built-in 300 ms auto-stop end the turn — no extra
+            # send_command('S') needed.  Block new commands until after auto-stop
+            # fires so the camera gets a still frame before the next decision.
+            self._last_robot_command_time = current_time + Config.ESP32_AUTO_STOP_MS / 1000.0
+        else:
+            self._last_robot_command_time = current_time
 
     def set_auto_follow(self, enabled: bool, known_only: bool = False) -> None:
         self.auto_follow       = enabled
@@ -877,56 +926,71 @@ class VideoProcessor:
         with self._robot_frame_lock:
             self._robot_last_frame = None
 
+        with self._robot_follow_lock:
+            self._robot_follow_box = None
+
         logger.info('Robot camera processing stopped.')
 
     def get_robot_frame(self) -> Optional[bytes]:
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, Config.STREAM_JPEG_QUALITY]
         with self._robot_frame_lock:
             if self._robot_last_frame is None:
                 return None
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, Config.STREAM_JPEG_QUALITY]
-        with self._robot_frame_lock:
             ret, buffer = cv2.imencode('.jpg', self._robot_last_frame, encode_params)
         return buffer.tobytes() if ret else None
 
     def _robot_capture_loop(self) -> None:
-        cap = cv2.VideoCapture(self._robot_cam_url)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        if not cap.isOpened():
-            logger.error(f'Cannot open robot camera stream: {self._robot_cam_url}')
-            self._robot_processing = False
-            return
-
-        logger.info('Robot camera capture thread started')
-        consecutive_failures = 0
+        reconnect_delay = 5.0
 
         while self._robot_processing:
-            ret, frame = cap.read()
-            if not ret:
-                consecutive_failures += 1
-                if consecutive_failures > 30:
-                    logger.warning('Robot camera: too many read failures — stopping')
-                    self._robot_processing = False
-                    break
-                time.sleep(0.05)
+            cap = cv2.VideoCapture(self._robot_cam_url)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if not cap.isOpened():
+                logger.warning('Robot camera: cannot open stream, retrying in %.0fs…', reconnect_delay)
+                cap.release()
+                time.sleep(reconnect_delay)
                 continue
+
+            logger.info('Robot camera capture connected: %s', self._robot_cam_url)
             consecutive_failures = 0
 
-            try:
-                self._robot_frame_queue.put_nowait(frame)
-            except queue.Full:
-                try:
-                    self._robot_frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
+            while self._robot_processing:
+                ret, frame = cap.read()
+                if not ret:
+                    consecutive_failures += 1
+                    if consecutive_failures > 15:
+                        logger.warning('Robot camera: stream lost — reconnecting…')
+                        break
+                    time.sleep(0.05)
+                    continue
+                consecutive_failures = 0
+
                 try:
                     self._robot_frame_queue.put_nowait(frame)
                 except queue.Full:
-                    pass
+                    try:
+                        self._robot_frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self._robot_frame_queue.put_nowait(frame)
+                    except queue.Full:
+                        pass
 
-        cap.release()
+            cap.release()
+            if self._robot_processing:
+                logger.info('Robot camera: reconnecting in %.0fs…', reconnect_delay)
+                time.sleep(reconnect_delay)
+
         logger.info('Robot camera capture thread exited.')
 
     def _robot_processing_loop(self) -> None:
+        # Persist last YOLO results so they are drawn on every frame, not just
+        # the YOLO frame.  Without this the annotated frame is overwritten by the
+        # next raw frame within ~1 ms (the queue is almost always full) and the
+        # stream reader at 25 fps never receives a frame that has boxes on it.
+        last_detections: list = []   # [(x1, y1, x2, y2, text, color)]
+
         while self._robot_processing:
             try:
                 item = self._robot_frame_queue.get(timeout=1.0)
@@ -940,8 +1004,18 @@ class VideoProcessor:
 
             self._robot_process_frame_counter += 1
             if self._robot_process_frame_counter % Config.YOLO_PROCESS_EVERY_N_FRAMES != 0:
-                with self._robot_frame_lock:
-                    self._robot_last_frame = frame
+                # Skipped frame — redraw last known boxes so detection is always visible
+                if last_detections:
+                    display = frame.copy()
+                    for dx1, dy1, dx2, dy2, dtext, dcolor in last_detections:
+                        cv2.rectangle(display, (dx1, dy1), (dx2, dy2), dcolor, 2)
+                        cv2.putText(display, dtext, (dx1, dy1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, dcolor, 2)
+                    with self._robot_frame_lock:
+                        self._robot_last_frame = display
+                else:
+                    with self._robot_frame_lock:
+                        self._robot_last_frame = frame
                 continue
 
             current_time = time.time()
@@ -968,40 +1042,60 @@ class VideoProcessor:
                 except Exception:
                     continue
 
-            annotated = frame.copy()
+            try:
+                annotated = frame.copy()
+                best_area = 0
+                best_person_box: Optional[tuple] = None
+                frame_detections: list = []
 
-            for result in results:
-                if result.boxes is None:
-                    continue
-
-                boxes = result.boxes.xyxy.cpu().numpy() if result.boxes.xyxy is not None else []
-                confs = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else []
-                classes = result.boxes.cls.cpu().numpy() if result.boxes.cls is not None else []
-                track_ids = (
-                    result.boxes.id.cpu().numpy().astype(int)
-                    if result.boxes.id is not None
-                    else [None] * len(boxes)
-                )
-
-                for box, conf, cls, track_id in zip(boxes, confs, classes, track_ids):
-                    x1, y1, x2, y2 = map(int, box)
-                    label = self._robot_model.names[int(cls)]
-
-                    if label != 'person':
+                for result in results:
+                    if result.boxes is None:
                         continue
 
-                    display_text, color = self._handle_robot_person(
-                        frame, x1, y1, x2, y2, conf, track_id, current_time
+                    boxes = result.boxes.xyxy.cpu().numpy() if result.boxes.xyxy is not None else []
+                    confs = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else []
+                    classes = result.boxes.cls.cpu().numpy() if result.boxes.cls is not None else []
+                    track_ids = (
+                        result.boxes.id.cpu().numpy().astype(int)
+                        if result.boxes.id is not None
+                        else [None] * len(boxes)
                     )
 
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(
-                        annotated, display_text, (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
-                    )
+                    for box, conf, cls, track_id in zip(boxes, confs, classes, track_ids):
+                        x1, y1, x2, y2 = map(int, box)
+                        label = self._robot_model.names[int(cls)]
 
-            with self._robot_frame_lock:
-                self._robot_last_frame = annotated
+                        if label != 'person':
+                            continue
+
+                        display_text, color = self._handle_robot_person(
+                            frame, x1, y1, x2, y2, conf, track_id, current_time
+                        )
+
+                        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(annotated, display_text, (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                        frame_detections.append((x1, y1, x2, y2, display_text, color))
+
+                        area = (x2 - x1) * (y2 - y1)
+                        if area > best_area:
+                            best_area = area
+                            best_person_box = (x1, y1, x2, y2, frame.shape[1])
+
+                # Always update: clears stale boxes when no person is detected
+                last_detections = frame_detections
+
+                with self._robot_follow_lock:
+                    self._robot_follow_box = best_person_box
+                    if best_person_box is not None:
+                        self._robot_follow_box_time = current_time
+
+                with self._robot_frame_lock:
+                    self._robot_last_frame = annotated
+
+            except Exception as exc:
+                logger.error(f'Robot camera frame processing error: {exc}', exc_info=True)
 
         logger.info('Robot camera processing thread exited.')
 
@@ -1013,60 +1107,12 @@ class VideoProcessor:
         track_id: Optional[int],
         current_time: float,
     ) -> tuple[str, tuple]:
-        color = (0, 0, 255)
-
-        if track_id is None:
-            return 'person', color
-
-        info = self._robot_track_names.get(track_id)
-
-        if info is None:
-            if conf >= Config.PERSON_CONF_THRESHOLD:
-                future = self._face_executor.submit(
-                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
-                )
-                name = 'Checking...'
-            else:
-                future = None
-                name = 'Unknown'
-            self._robot_track_names[track_id] = {
-                'name':            name,
-                'last_seen':       current_time,
-                'last_face_check': current_time,
-                'future':          future,
-            }
-        else:
-            info['last_seen'] = current_time
-
-            future = info.get('future')
-            if future is not None and future.done():
-                try:
-                    identified_name, enc, _image_path = future.result()
-                    info['name'] = identified_name
-                except Exception as exc:
-                    logger.error(f'Robot face future error: {exc}')
-                    info['name'] = 'Unknown'
-                info['future'] = None
-                info['last_face_check'] = current_time
-
-            name = info['name']
-
-            if (
-                name == 'Unknown'
-                and info.get('future') is None
-                and conf >= Config.PERSON_CONF_THRESHOLD
-                and current_time - info.get('last_face_check', 0) > Config.UNKNOWN_FACE_RECHECK_INTERVAL
-            ):
-                info['future'] = self._face_executor.submit(
-                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
-                )
-
-        name = self._robot_track_names[track_id]['name']
-
-        if name not in ('Unknown', 'Checking...'):
-            color = (0, 255, 0)
-
-        return name, color
+        return self._handle_person(
+            frame, x1, y1, x2, y2, conf, track_id, current_time,
+            current_frame_names=[],
+            track_dict=self._robot_track_names,
+            fire_alerts=False,
+        )
 
     def check_obstacle(self, frame: np.ndarray) -> Optional[str]:
         """

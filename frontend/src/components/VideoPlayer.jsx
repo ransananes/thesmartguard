@@ -20,10 +20,79 @@ const VideoPlayer = ({ streamUrl, pipUrl, showPip, onClosePip }) => {
     const isDragging = useRef(false);
     const dragOffset = useRef({ x: 0, y: 0 });
 
+    // PiP stream reconnect state
+    const pipImgRef = useRef(null);
+    const pipCanvasRef = useRef(null);
+    const [pipSrc, setPipSrc] = useState(pipUrl || null);
+    const pipLastHashRef = useRef(null);
+    const pipFrozenCountRef = useRef(0);
+    const pipErrorTimerRef = useRef(null);
+
     useEffect(() => {
         setHasError(false);
         setIsPlaying(false);
     }, [streamUrl]);
+
+    // Keep pipSrc in sync when the base URL changes
+    useEffect(() => {
+        setPipSrc(pipUrl || null);
+        pipLastHashRef.current = null;
+        pipFrozenCountRef.current = 0;
+    }, [pipUrl]);
+
+    // Cleanup pending reconnect timer on unmount
+    useEffect(() => () => {
+        if (pipErrorTimerRef.current) clearTimeout(pipErrorTimerRef.current);
+    }, []);
+
+    // Watchdog: detect frozen PiP frame and force-reconnect
+    useEffect(() => {
+        if (!showPip || !pipUrl) return;
+
+        const id = setInterval(() => {
+            const img = pipImgRef.current;
+            const canvas = pipCanvasRef.current;
+            if (!img || !canvas || !img.complete || !img.naturalWidth) return;
+
+            const ctx = canvas.getContext('2d');
+            canvas.width = 16;
+            canvas.height = 16;
+            try {
+                ctx.drawImage(img, 0, 0, 16, 16);
+                const pixels = ctx.getImageData(0, 0, 16, 16).data;
+                let hash = 0;
+                for (let i = 0; i < pixels.length; i += 4)
+                    hash += pixels[i] + pixels[i + 1] + pixels[i + 2];
+
+                if (hash === pipLastHashRef.current) {
+                    pipFrozenCountRef.current += 1;
+                    if (pipFrozenCountRef.current >= 2) {
+                        // 2 × 3 s = 6 s with no pixel change → reconnect
+                        pipFrozenCountRef.current = 0;
+                        pipLastHashRef.current = null;
+                        const sep = pipUrl.includes('?') ? '&' : '?';
+                        setPipSrc(`${pipUrl}${sep}_t=${Date.now()}`);
+                    }
+                } else {
+                    pipFrozenCountRef.current = 0;
+                    pipLastHashRef.current = hash;
+                }
+            } catch (_) {
+                // Canvas security error (CORS not yet applied) — rely on onError fallback
+            }
+        }, 3000);
+
+        return () => clearInterval(id);
+    }, [showPip, pipUrl]);
+
+    const handlePipError = () => {
+        if (pipErrorTimerRef.current) return;
+        pipErrorTimerRef.current = setTimeout(() => {
+            const sep = (pipUrl || '').includes('?') ? '&' : '?';
+            setPipSrc(`${pipUrl}${sep}_t=${Date.now()}`);
+            pipErrorTimerRef.current = null;
+        }, 2000);
+    };
 
     // Mouse drag handlers for PiP
     useEffect(() => {
@@ -126,11 +195,15 @@ const VideoPlayer = ({ streamUrl, pipUrl, showPip, onClosePip }) => {
                             style={pipStyle}
                         >
                             <img
-                                src={pipUrl}
+                                ref={pipImgRef}
+                                src={pipSrc || pipUrl}
                                 alt="Robot Camera"
                                 className="w-full h-full object-cover"
                                 draggable={false}
+                                crossOrigin="anonymous"
+                                onError={handlePipError}
                             />
+                            <canvas ref={pipCanvasRef} style={{ display: 'none' }} />
                             {/* Header bar */}
                             <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-2 py-1 bg-black/70 backdrop-blur-sm pointer-events-none">
                                 <div className="flex items-center gap-1.5">
