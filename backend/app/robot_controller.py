@@ -318,10 +318,9 @@ class RobotController:
         """
         Navigate back to the home position by reversing the movement log.
 
-        Spins 180° first so the camera faces the direction of travel throughout
-        the return, then replays every move at fast-return speed.  The reversed
-        mapping keeps F/B as forward/backward (camera always ahead) and swaps
-        L/R to undo the original turns.
+        Retraces the path in reverse: each logged move is replayed as its
+        opposite direction (F→backward, B→forward, L→right-turn, R→left-turn)
+        so the robot physically backs through every step without spinning first.
 
         If obstacle_check_cb is supplied, the robot's ESP32-CAM stream is opened
         and checked every frame during straight moves; when an obstacle is
@@ -351,12 +350,12 @@ class RobotController:
         self._returning_home = True
         logger.info(f'return_to_home: reversing {len(log_snapshot)} moves')
 
-        # After the initial 180° spin the robot faces its origin, so F/B keep
-        # their direction and only turns need to be flipped.
-        _REVERSE = {'F': 'f', 'B': 'b', 'L': 'r', 'R': 'l'}
+        # No spin: each move is replaced by its physical opposite so the robot
+        # backs through its own footsteps (F→backward, B→forward, turns swap).
+        _REVERSE = {'F': 'b', 'B': 'f', 'L': 'r', 'R': 'l'}
         _DURATION_SCALE = {
-            'F': 190 / 220,  # avg fwd speed (180+200)/2 vs SPEED_RETURN_BWD 220
-            'B': 160 / 220,  # SPEED_BACK vs SPEED_RETURN_BWD
+            'F': 190 / 220,  # avg fwd speed (180+200)/2 vs SPEED_RETURN_BWD 220 (now run as 'b')
+            'B': 160 / 220,  # SPEED_BACK vs SPEED_RETURN_BWD (now run as 'f')
             'L': 130 / 185,  # SPEED_TURN vs SPEED_RETURN_TURN
             'R': 130 / 185,
         }
@@ -373,15 +372,6 @@ class RobotController:
                     cap = _cap_open(cam_url, timeout=2.5)
                     if cap is None:
                         logger.warning('return_to_home: robot camera unavailable — obstacle detection disabled')
-
-                # Spin 180° so the camera always faces the direction of travel
-                logger.info('return_to_home: spinning 180°')
-                spin_end = time.time() + Config.SPIN_180_MS / 1000.0
-                while time.time() < spin_end:
-                    self.send_command('l', force=True)
-                    time.sleep(min(_REFRESH, spin_end - time.time()))
-                self.send_command('S', force=True)
-                time.sleep(0.1)  # let the robot settle after spinning
 
                 # Replay the path in reverse
                 for cmd, duration_ms in reversed(log_snapshot):
