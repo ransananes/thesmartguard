@@ -556,7 +556,7 @@ class VideoProcessor:
                             follow_target = (
                                 known_target
                                 if self.follow_known_only
-                                else (known_target or unknown_target)
+                                else unknown_target
                             )
 
                         if follow_target is None and self.follow_unknowns:
@@ -653,6 +653,7 @@ class VideoProcessor:
         *,
         track_dict: Optional[dict] = None,
         fire_alerts: bool = True,
+        face_tolerance: Optional[float] = None,
     ) -> tuple[str, tuple]:
         """Unified person/face handler used by both the main camera and robot camera.
 
@@ -672,7 +673,7 @@ class VideoProcessor:
         if info is None:
             if conf >= Config.PERSON_CONF_THRESHOLD:
                 future = self._face_executor.submit(
-                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
+                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2, face_tolerance
                 )
                 name = 'Checking...'
             else:
@@ -719,7 +720,7 @@ class VideoProcessor:
                 and current_time - info.get('last_face_check', 0) > Config.UNKNOWN_FACE_RECHECK_INTERVAL
             ):
                 info['future'] = self._face_executor.submit(
-                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2
+                    self._identify_face_in_box, frame.copy(), x1, y1, x2, y2, face_tolerance
                 )
 
         name = tracks[track_id]['name']
@@ -769,7 +770,8 @@ class VideoProcessor:
     # ════════════════════════════════════════════════════════════════════
 
     def _identify_face_in_box(
-        self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int
+        self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int,
+        face_tolerance: Optional[float] = None,
     ) -> tuple[str, Optional[np.ndarray], Optional[str]]:
         """Two-stage pipeline: YOLO face detect → face_recognition encode → save crop.
 
@@ -801,7 +803,7 @@ class VideoProcessor:
 
             # Geometric sanity check — hands/fists fail these
             face_w, face_h = fx2 - fx1, fy2 - fy1
-            if face_w < 20 or face_h < 20:
+            if face_w < 10 or face_h < 10:
                 continue
             aspect = face_w / face_h if face_h > 0 else 0
             if not (0.5 <= aspect <= 1.8):
@@ -838,8 +840,9 @@ class VideoProcessor:
             known_names = list(self.known_face_names)
 
         if known_encs:
+            tolerance = face_tolerance if face_tolerance is not None else Config.FACE_TOLERANCE
             distances = face_recognition.face_distance(known_encs, face_enc)
-            matches   = face_recognition.compare_faces(known_encs, face_enc, tolerance=Config.FACE_TOLERANCE)
+            matches   = face_recognition.compare_faces(known_encs, face_enc, tolerance=tolerance)
             best_idx  = int(np.argmin(distances))
             if matches[best_idx]:
                 name = known_names[best_idx]
@@ -882,7 +885,7 @@ class VideoProcessor:
             with self._raw_frame_lock:
                 frame_height = self._raw_frame.shape[0] if self._raw_frame is not None else 480
             person_height_pct = (y2 - y1) / frame_height
-            command = 'F' if person_height_pct < 0.6 else 'S'
+            command = 'F' if person_height_pct < 0.4 else 'S'
 
         ok, _ = robot_controller.send_command(command, force=True)
         if not ok:
@@ -1084,12 +1087,12 @@ class VideoProcessor:
                     verbose=False,
                     conf=Config.YOLO_CONF_THRESHOLD,
                     tracker='bytetrack.yaml',
-                    imgsz=Config.YOLO_IMGSZ,
+                    imgsz=Config.ROBOT_YOLO_IMGSZ,
                 )
             except Exception as exc:
                 logger.error(f'Robot camera tracking error: {exc}')
                 try:
-                    results = self._robot_model(frame, verbose=False, conf=Config.YOLO_CONF_THRESHOLD, imgsz=Config.YOLO_IMGSZ)
+                    results = self._robot_model(frame, verbose=False, conf=Config.YOLO_CONF_THRESHOLD, imgsz=Config.ROBOT_YOLO_IMGSZ)
                 except Exception:
                     continue
 
@@ -1163,6 +1166,7 @@ class VideoProcessor:
             current_frame_names=[],
             track_dict=self._robot_track_names,
             fire_alerts=False,
+            face_tolerance=Config.ROBOT_FACE_TOLERANCE,
         )
 
     def check_obstacle(self, frame: np.ndarray) -> Optional[str]:

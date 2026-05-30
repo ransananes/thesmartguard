@@ -29,16 +29,25 @@ def get_status():
 
 @robot_bp.route('/camera_feed')
 def robot_camera_feed():
-    """Serve the robot camera stream with face-recognition annotations.
+    """Serve the robot camera stream with YOLO + face-recognition annotations.
 
-    When the VideoProcessor has an active robot camera pipeline the route
-    serves annotated MJPEG frames (same format as the main /video_feed).
-    Falls back to a raw proxy of the ESP32-CAM stream when the processor
-    is not running (e.g. robot not yet connected through the UI).
-
-    Optional query params ``host`` and ``port`` are honoured in fallback mode.
+    Resolves the host from the active robot connection or from ``host``/``port``
+    query params (set by the camera-config PiP path).  If the VideoProcessor
+    pipeline is not already running for that host, it is started automatically
+    so bounding boxes are always drawn regardless of whether the user has opened
+    the RobotControl panel.
     """
-    vp = getattr(current_app, 'video_processor', None)
+    vp   = getattr(current_app, 'video_processor', None)
+    host = (request.args.get('host') or '').strip() or robot_controller.host
+    port = int(request.args.get('port') or Config.ROBOT_CAMERA_PORT)
+
+    if not host:
+        return jsonify({'error': 'Robot host not configured'}), 503
+
+    # Auto-start the YOLO processing pipeline if it isn't already running.
+    if vp and not vp._robot_processing:
+        cam_url = f'http://{host}:{port}/stream'
+        vp.start_robot_camera_processing(cam_url)
 
     if vp and vp._robot_processing:
         def generate_annotated():
@@ -59,15 +68,8 @@ def robot_camera_feed():
             mimetype='multipart/x-mixed-replace; boundary=frame',
         )
 
-    # Fallback: proxy the raw ESP32-CAM MJPEG stream
-    host = (request.args.get('host') or '').strip() or robot_controller.host
-    port = int(request.args.get('port') or Config.ROBOT_CAMERA_PORT)
-
-    if not host:
-        return jsonify({'error': 'Robot host not configured'}), 503
-
+    # True fallback: vp not available — proxy the raw ESP32-CAM MJPEG stream.
     cam_url = f'http://{host}:{port}/stream'
-
     try:
         upstream = req_lib.get(cam_url, stream=True, timeout=(5, None))
         upstream.raise_for_status()

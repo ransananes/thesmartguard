@@ -56,11 +56,13 @@ class Config:
     # YOLO detection confidence threshold
     YOLO_CONF_THRESHOLD: float = float(os.environ.get('YOLO_CONF_THRESHOLD', '0.4'))
     # Minimum person confidence required to trigger face detection pipeline
-    PERSON_CONF_THRESHOLD: float = float(os.environ.get('PERSON_CONF_THRESHOLD', '0.55'))
+    PERSON_CONF_THRESHOLD: float = float(os.environ.get('PERSON_CONF_THRESHOLD', '0.4'))
     # Face-model confidence threshold
-    FACE_CONF_THRESHOLD: float = float(os.environ.get('FACE_CONF_THRESHOLD', '0.65'))
+    FACE_CONF_THRESHOLD: float = float(os.environ.get('FACE_CONF_THRESHOLD', '0.5'))
     # Face recognition distance tolerance (lower = stricter)
-    FACE_TOLERANCE: float = float(os.environ.get('FACE_TOLERANCE', '0.55'))
+    FACE_TOLERANCE: float = float(os.environ.get('FACE_TOLERANCE', '0.6'))
+    # Stricter tolerance for the robot camera (lower quality / angled frames)
+    ROBOT_FACE_TOLERANCE: float = float(os.environ.get('ROBOT_FACE_TOLERANCE', '0.5'))
     # JPEG quality used when encoding frames for the live stream (1-100)
     STREAM_JPEG_QUALITY: int = int(os.environ.get('STREAM_JPEG_QUALITY', '70'))
     # Default FPS to use if the stream doesn't report one (or for files)
@@ -75,6 +77,8 @@ class Config:
     YOLO_PROCESS_EVERY_N_FRAMES: int = int(os.environ.get('YOLO_PROCESS_EVERY_N_FRAMES', '1'))
     # Input resolution fed to YOLO (must be a multiple of 32); 320 is ~4× faster than 640
     YOLO_IMGSZ: int = int(os.environ.get('YOLO_IMGSZ', '320'))
+    # Higher inference resolution for the robot camera — needed to detect people at range
+    ROBOT_YOLO_IMGSZ: int = int(os.environ.get('ROBOT_YOLO_IMGSZ', '640'))
     # Target FPS for the MJPEG video_feed stream sent to the browser
     STREAM_TARGET_FPS: int = int(os.environ.get('STREAM_TARGET_FPS', '25'))
 
