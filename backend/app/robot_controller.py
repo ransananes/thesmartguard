@@ -24,8 +24,12 @@ logger = logging.getLogger(__name__)
 
 VALID_COMMANDS  = frozenset({'F', 'B', 'L', 'R', 'S'})
 CMD_PORT        = 3000
-CONNECT_TIMEOUT = 5   # seconds for the initial TCP handshake
-SEND_TIMEOUT    = 2   # seconds for each sendall call
+CONNECT_TIMEOUT = 2    # seconds for the initial TCP handshake
+SEND_TIMEOUT    = 0.3  # seconds for each sendall call — fail fast so recovery is quick
+
+# Keepalive / watchdog
+_KA_TICK_S      = 0.15  # how often the keepalive thread wakes
+_KA_IDLE_S      = 0.25  # send 'S' if no command went out in this many seconds
 
 
 def _cap_open(url: str, timeout: float = 2.5) -> 'cv2.VideoCapture | None':
@@ -69,6 +73,10 @@ class RobotController:
 
         self.autonomous_enabled    = False
         self._last_manual_override = 0.0
+        self._last_sent_time       = 0.0  # wall-clock time of last successful sendall
+
+        # Keepalive watchdog
+        self._keepalive_stop: threading.Event | None = None
 
         # Dead-reckoning: log every directional move so we can reverse back to home
         self._movement_log: list[tuple[str, int]] = []   # (command, duration_ms)
@@ -125,9 +133,13 @@ class RobotController:
         if not self.host:
             return False, 'No ESP32 IP address configured.'
         with self._lock:
-            return self._open_socket()
+            ok, msg = self._open_socket()
+        if ok:
+            self._start_keepalive()
+        return ok, msg
 
     def disconnect(self) -> tuple[bool, str]:
+        self._stop_keepalive()
         with self._lock:
             if self._sock:
                 try:
@@ -142,6 +154,60 @@ class RobotController:
                 self._last_command = None
                 return True, 'Disconnected'
             return False, 'Not connected'
+
+    # ------------------------------------------------------------------
+    # Keepalive watchdog
+    # ------------------------------------------------------------------
+
+    def _start_keepalive(self) -> None:
+        self._stop_keepalive()   # cancel any existing watchdog first
+        stop = threading.Event()
+        self._keepalive_stop = stop
+        t = threading.Thread(
+            target=self._keepalive_loop, args=(stop,),
+            daemon=True, name='robot-keepalive',
+        )
+        t.start()
+
+    def _stop_keepalive(self) -> None:
+        if self._keepalive_stop:
+            self._keepalive_stop.set()
+            self._keepalive_stop = None
+
+    def _keepalive_loop(self, stop: threading.Event) -> None:
+        """
+        Wakes every _KA_TICK_S seconds.
+        - If the socket is dead, reconnects automatically.
+        - If no command has been sent recently, sends 'S' to keep the TCP
+          connection alive and ensure the robot stays stopped while idle.
+        """
+        while not stop.is_set():
+            stop.wait(timeout=_KA_TICK_S)
+            if stop.is_set():
+                break
+
+            if not self.host:
+                continue
+
+            if not self.is_connected:
+                logger.debug('Keepalive: socket gone — reconnecting')
+                with self._lock:
+                    self._open_socket()
+                continue
+
+            if time.time() - self._last_sent_time >= _KA_IDLE_S:
+                with self._lock:
+                    if self._sock:
+                        try:
+                            self._sock.sendall(b'S\n')
+                            self._last_sent_time = time.time()
+                        except Exception as exc:
+                            logger.warning(f'Keepalive probe failed: {exc}')
+                            try:
+                                self._sock.close()
+                            except Exception:
+                                pass
+                            self._sock = None
 
     # ------------------------------------------------------------------
     # Command sending
@@ -175,6 +241,7 @@ class RobotController:
         with self._lock:
             try:
                 self._sock.sendall(f'{command}\n'.encode())
+                self._last_sent_time = time.time()
                 return True, f'Command {command} sent'
             except Exception as exc:
                 # Socket was reset (e.g. ESP32 rebooted) — reconnect and retry once.
@@ -188,6 +255,7 @@ class RobotController:
                 if ok:
                     try:
                         self._sock.sendall(f'{command}\n'.encode())
+                        self._last_sent_time = time.time()
                         logger.info('RobotController: reconnected and command sent')
                         return True, f'Command {command} sent (after reconnect)'
                     except Exception as exc2:

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../services/api';
 import {
     ChevronUp,
@@ -26,6 +26,10 @@ const RobotControl = ({ isActive = false }) => {
     const [followUnknowns, setFollowUnknowns] = useState(false);
     const [homing, setHoming] = useState(false);
     const [scanActive, setScanActive] = useState(false);
+    const repeatRef = useRef(null);      // setInterval handle for held keys
+    const inFlightRef = useRef(false);   // true while a command HTTP request is in flight
+    const pendingCmdRef = useRef(null);  // latest command that arrived while in-flight
+    const lastReconnectRef = useRef(0);  // timestamp of last auto-reconnect attempt
 
     const fetchStatus = useCallback(async () => {
         try {
@@ -46,26 +50,60 @@ const RobotControl = ({ isActive = false }) => {
         fetchStatus();
     }, [fetchStatus]);
 
-    // Poll while the robot is actively homing or scanning so the button resets automatically
+    // Always poll status every 2 s; auto-reconnect if the backend socket dropped.
+    useEffect(() => {
+        const interval = setInterval(async () => {
+            await fetchStatus();
+            setStatus(prev => {
+                if (!prev.connected && prev.host) {
+                    // Rate-limit reconnect attempts to once every 5 s.
+                    const now = Date.now();
+                    if (now - lastReconnectRef.current > 5000) {
+                        lastReconnectRef.current = now;
+                        api.robot.connect().catch(() => {});
+                    }
+                }
+                return prev;
+            });
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [fetchStatus]);
+
+    // Faster 1 s poll while homing or scanning so buttons reset promptly.
     useEffect(() => {
         if (!homing && !scanActive) return;
         const interval = setInterval(fetchStatus, 1000);
         return () => clearInterval(interval);
     }, [homing, scanActive, fetchStatus]);
 
-    const sendCommand = async (command) => {
+    // Named async function so it can call itself recursively to flush pending commands.
+    const sendCommand = useCallback(async function send(command) {
+        if (inFlightRef.current) {
+            // Store the latest command; STOP always takes priority over motion.
+            if (command === 'S' || pendingCmdRef.current !== 'S') {
+                pendingCmdRef.current = command;
+            }
+            return;
+        }
+        inFlightRef.current = true;
+        pendingCmdRef.current = null;
         setActiveCommand(command);
         try {
             const res = await api.robot.control(command);
-            if (!res.success) {
-                toast.error(res.message);
-            }
-        } catch (error) {
+            if (!res.success) toast.error(res.message);
+        } catch {
             toast.error("Failed to send command");
         } finally {
-            setTimeout(() => setActiveCommand(null), 200);
+            inFlightRef.current = false;
+            setTimeout(() => setActiveCommand(null), 150);
+            // Immediately flush any command that arrived while we were in-flight.
+            const next = pendingCmdRef.current;
+            if (next !== null) {
+                pendingCmdRef.current = null;
+                send(next);
+            }
         }
-    };
+    }, []);
 
     const handleConnect = async () => {
         setIsLoading(true);
@@ -159,48 +197,61 @@ const RobotControl = ({ isActive = false }) => {
     };
 
     useEffect(() => {
-        const handleKeyDown = (e) => {
-            // Only handle keys when the Robot tab is visible
-            if (!isActive) return;
-            if (!status.connected) return;
+        const KEY_TO_CMD = {
+            w: 'F', arrowup: 'F',
+            s: 'B', arrowdown: 'B',
+            a: 'L', arrowleft: 'L',
+            d: 'R', arrowright: 'R',
+            ' ': 'S',
+        };
+        // Re-send interval must be less than the ESP32's 300ms auto-stop timeout.
+        const REPEAT_MS = 150;
 
-            // Don't intercept keys while the user is typing in a form control
-            const tag = document.activeElement?.tagName.toLowerCase();
-            if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-
-            switch (e.key.toLowerCase()) {
-                case 'w':
-                case 'arrowup':
-                    e.preventDefault();
-                    sendCommand('F');
-                    break;
-                case 's':
-                case 'arrowdown':
-                    e.preventDefault();
-                    sendCommand('B');
-                    break;
-                case 'a':
-                case 'arrowleft':
-                    e.preventDefault();
-                    sendCommand('L');
-                    break;
-                case 'd':
-                case 'arrowright':
-                    e.preventDefault();
-                    sendCommand('R');
-                    break;
-                case ' ':
-                    e.preventDefault();
-                    sendCommand('S');
-                    break;
-                default:
-                    break;
+        const stopRepeat = () => {
+            if (repeatRef.current) {
+                clearInterval(repeatRef.current);
+                repeatRef.current = null;
             }
         };
 
+        const handleKeyDown = (e) => {
+            if (!isActive || !status.connected) return;
+            const tag = document.activeElement?.tagName.toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+            const cmd = KEY_TO_CMD[e.key.toLowerCase()];
+            if (!cmd) return;
+            e.preventDefault();
+
+            // Ignore OS key-repeat events — we drive repetition ourselves.
+            if (e.repeat) return;
+
+            stopRepeat();
+            sendCommand(cmd);
+
+            // STOP is a one-shot — no repeat needed.
+            if (cmd !== 'S') {
+                repeatRef.current = setInterval(() => sendCommand(cmd), REPEAT_MS);
+            }
+        };
+
+        const handleKeyUp = (e) => {
+            if (!isActive || !status.connected) return;
+            const cmd = KEY_TO_CMD[e.key.toLowerCase()];
+            if (!cmd || cmd === 'S') return;
+
+            stopRepeat();
+            sendCommand('S');
+        };
+
         window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [status.connected, isActive]);
+        window.addEventListener('keyup', handleKeyUp);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+            stopRepeat();
+        };
+    }, [status.connected, isActive, sendCommand]);
 
     const ControlButton = ({ command, icon: Icon, label }) => (
         <motion.button

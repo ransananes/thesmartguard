@@ -111,6 +111,7 @@ class VideoProcessor:
         self._current_follow_target: Optional[str] = None
         self._last_follow_time: float = 0.0       # last frame a follow target was visible
         self._last_follow_command: str = 'S'       # last directional command sent while following
+        self._follow_track_id: Optional[int] = None  # locked track — don't switch mid-follow
 
         # ── Intercept: detection-triggered home-return + scan ────────────
         self._homing: bool = False                       # robot is autonomously returning home
@@ -464,10 +465,12 @@ class VideoProcessor:
                 frame_hud: list = []          # (x, y, text, scale, color, thickness)
 
                 # ── Follow candidates ────────────────────────────────────
+                # Tuples are (x1, y1, x2, y2, name, track_id)
                 known_target:   Optional[tuple] = None
                 unknown_target: Optional[tuple] = None
                 max_known_area   = 0
                 max_unknown_area = 0
+                _sticky_box: Optional[tuple] = None  # current _follow_track_id if still visible
 
                 with self._settings_lock:
                     enabled = set(self.enabled_labels)
@@ -508,14 +511,18 @@ class VideoProcessor:
                                 area = (x2 - x1) * (y2 - y1)
                                 name = self.track_names.get(track_id, {}).get('name', 'Unknown')
 
+                                # Track sticky box for the currently-locked target
+                                if track_id == self._follow_track_id:
+                                    _sticky_box = (x1, y1, x2, y2, name, track_id)
+
                                 if name not in ('Unknown', 'Checking...'):
                                     if area > max_known_area:
                                         max_known_area = area
-                                        known_target   = (x1, y1, x2, y2, name)
-                                elif name == 'Unknown':
+                                        known_target   = (x1, y1, x2, y2, name, track_id)
+                                else:
                                     if area > max_unknown_area:
                                         max_unknown_area = area
-                                        unknown_target   = (x1, y1, x2, y2, name)
+                                        unknown_target   = (x1, y1, x2, y2, name, track_id)
 
                         else:
                             label_lower = label.lower()
@@ -537,20 +544,32 @@ class VideoProcessor:
                 elif in_follow_mode:
                     follow_target = None
 
-                    if self.auto_follow:
-                        follow_target = (
-                            known_target
-                            if self.follow_known_only
-                            else (known_target or unknown_target)
-                        )
+                    # Sticky targeting: keep following the same track_id if still visible
+                    if _sticky_box is not None:
+                        follow_target = _sticky_box
+                    else:
+                        # Locked target disappeared — release the lock and pick a new one
+                        if self._follow_track_id is not None:
+                            self._follow_track_id = None
 
-                    if follow_target is None and self.follow_unknowns:
-                        follow_target = unknown_target
+                        if self.auto_follow:
+                            follow_target = (
+                                known_target
+                                if self.follow_known_only
+                                else (known_target or unknown_target)
+                            )
+
+                        if follow_target is None and self.follow_unknowns:
+                            follow_target = unknown_target
+
+                        if follow_target is not None:
+                            self._follow_track_id = follow_target[5]
 
                     if follow_target:
-                        fx1, fy1, fx2, fy2, follow_name = follow_target
+                        fx1, fy1, fx2, fy2, follow_name, follow_tid = follow_target
                         self._current_follow_target = follow_name
                         self._last_follow_time = current_time
+                        self._follow_track_id = follow_tid
 
                         if self._scan_active:
                             self._scan_active = False
@@ -563,6 +582,7 @@ class VideoProcessor:
 
                     else:
                         self._current_follow_target = None
+                        self._follow_track_id = None
 
                         with self._robot_follow_lock:
                             rbox = self._robot_follow_box
@@ -572,7 +592,7 @@ class VideoProcessor:
                             and current_time - rbox_time < Config.FOLLOW_PERSISTENCE_S
                         )
 
-                        if robot_cam_fresh and (self._scan_active or self.follow_unknowns):
+                        if robot_cam_fresh and (self._scan_active or self.follow_unknowns or self.auto_follow):
                             if self._scan_active:
                                 self._scan_active = False
                                 robot_controller.resume_movement_logging()
@@ -585,7 +605,9 @@ class VideoProcessor:
                                 self._end_intercept()
                             elif current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
                                 robot_controller.send_command('L', force=True)
-                                self._last_robot_command_time = current_time + Config.ESP32_AUTO_STOP_MS / 1000.0
+                                # Re-send before the ESP32's auto-stop so the robot spins
+                                # continuously rather than doing a stutter-stop-stutter scan.
+                                self._last_robot_command_time = current_time
                         elif current_time - self._last_follow_time < Config.FOLLOW_PERSISTENCE_S:
                             if current_time - self._last_robot_command_time > Config.ROBOT_COMMAND_INTERVAL:
                                 robot_controller.send_command(self._last_follow_command, force=True)
@@ -726,16 +748,19 @@ class VideoProcessor:
             )
 
         if (
-            not self._homing
+            self.follow_unknowns
+            and not self._homing
             and not self._scan_active
+            and self._follow_track_id is None   # don't interrupt an active follow
+            and robot_controller.is_connected
             and name == 'Unknown'
             and not track_info.get('robot_engaged', False)
             and track_info.get('unknown_since') is not None
             and current_time - track_info['unknown_since'] >= Config.ROBOT_ENGAGE_DELAY
         ):
             track_info['robot_engaged'] = True
-            self.follow_unknowns = True
-            logger.info(f'Auto-follow engaged for unknown track {track_id}')
+            self._trigger_intercept(track_id)
+            logger.info(f'Auto-intercept triggered for unknown track {track_id}')
 
         return name, color
 
@@ -795,14 +820,11 @@ class VideoProcessor:
         if face_loc_for_enc is None:
             return 'Unknown', None, None
 
-        # Stage 2: dlib confirms a face exists in this crop before we encode.
-        # This catches YOLO false-positives (e.g. hands) — if dlib also sees
-        # nothing here, discard the YOLO hit.
+        # Stage 2: encode the YOLO-detected face region directly.
+        # We rely on the size/aspect checks above to reject obvious non-faces.
+        # A failed encoding (empty list) is still caught below.
         rgb_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
         with self._face_recognition_lock:
-            dlib_locs = face_recognition.face_locations(rgb_crop, number_of_times_to_upsample=1)
-            if not dlib_locs:
-                return 'Unknown', None, None
             encs = face_recognition.face_encodings(rgb_crop, face_loc_for_enc)
 
         if not encs:
@@ -883,6 +905,7 @@ class VideoProcessor:
         self.auto_follow       = enabled
         self.follow_known_only = known_only
         self._current_follow_target = None
+        self._follow_track_id = None
         logger.info(f'Auto-follow: {enabled}, known_only: {known_only}')
         if not enabled and not self.follow_unknowns:
             robot_controller.send_command('S', force=True)
@@ -890,6 +913,7 @@ class VideoProcessor:
     def set_follow_unknowns(self, enabled: bool) -> None:
         self.follow_unknowns = enabled
         self._current_follow_target = None
+        self._follow_track_id = None
         logger.info(f'Follow-unknowns: {enabled}')
         if not enabled:
             if self._homing or self._scan_active:
@@ -1209,6 +1233,7 @@ class VideoProcessor:
         """Cancel the intercept and restore pre-intercept follow state."""
         self._scan_active = False
         self._priority_track_id = None
+        self._follow_track_id = None
         self.follow_unknowns = self._pre_intercept_follow_unknowns
         robot_controller.send_command('S', force=True)
         robot_controller.resume_movement_logging()
