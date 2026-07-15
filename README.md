@@ -22,30 +22,6 @@ A real-time intelligent security monitoring system with face recognition, object
 - Detection history with filtering by settings
 - Camera selector with live preview
 
-## 🛠️ Tech Stack
-
-### Backend
-| Technology | Purpose |
-|------------|---------|
-| Flask | REST API framework |
-| SQLAlchemy | ORM & database |
-| SQLite | Data storage |
-| Flask-JWT-Extended | Authentication |
-| OpenCV | Video capture & processing |
-| YOLOv8 | Object detection |
-| face_recognition | Face encoding & matching |
-| imagehash | Duplicate detection |
-
-### Frontend
-| Technology | Purpose |
-|------------|---------|
-| React | UI framework |
-| Vite | Build tool |
-| TailwindCSS | Styling |
-| Framer Motion | Animations |
-| Lucide React | Icons |
-| React Hot Toast | Notifications |
-
 ## 🚀 Getting Started
 
 ### Prerequisites
